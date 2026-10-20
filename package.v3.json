@@ -1,0 +1,54 @@
+{
+  "IsoRemuxOrganize": {
+    "name": "ISO原盘转封装",
+    "description": "自动扫描影视下载目录中的蓝光原盘 ISO 单文件，挂载后无损转封装为 MKV，交由 MoviePilot 整理入库，保留原始 ISO。",
+    "labels": "文件整理,蓝光原盘,ffmpeg,ISO",
+    "version": "1.0.0",
+    "icon": "isoremuxorganize.png",
+    "author": "local",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v1.0.0": "初始版本：定时扫描+事件触发，自动挂载 ISO、定位主视频、无损转 MKV、去重记录"
+    }
+  },
+  "SeriesOrganizer": {
+    "name": "系列自动归组",
+    "description": "整理完成后自动将同系列电影归入系列父文件夹，未匹配的疑似续集发送提示。",
+    "labels": "媒体整理",
+    "version": "1.0.0",
+    "icon": "seriesorganizer.png",
+    "author": "local",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v1.0.0": "初始版本：监听整理完成事件，将同系列电影归入中文系列名父文件夹"
+    }
+  },
+  "JellyfinNfoFixer": {
+    "name": "Jellyfin Nfo命名修复",
+    "description": "刮削完成后将电影目录内的 NFO 复制为 movie.nfo，修复 Jellyfin 无法读取 MoviePilot NFO 的问题。",
+    "labels": "刮削,Jellyfin",
+    "version": "1.0.0",
+    "icon": "jellyfinnfofixer.png",
+    "author": "local",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v1.0.0": "初始版本：监听元数据刮削事件生成 movie.nfo，兼容 Jellyfin 的 NFO 读取规则"
+    }
+  },
+  "TpdbScraper": {
+    "name": "ThePornDB 成人刮削",
+    "description": "在 MoviePilot 端对成人内容库调用 ThePornDB 刮削元数据，智能探测 Scene/JAV/Movie，NFO 落盘并下载海报，Jellyfin 侧只读。",
+    "labels": "刮削,成人",
+    "version": "1.0.0",
+    "icon": "tpdbscraper.png",
+    "author": "local",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v1.0.0": "初始版本：ThePornDB REST API 刮削，Scene/JAV/Movie 智能探测，NFO 落盘+海报下载，联邦 UI"
+    }
+  }
+}
