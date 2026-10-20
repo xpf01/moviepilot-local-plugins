@@ -251,6 +251,7 @@ class TpdbScraper(_PluginBase):
                             "label": "StashDB API Key",
                             "placeholder": "在 stashdb.org 个人页复制（可选）",
                             "type": "password",
+                            "class": "mt-4",
                         },
                     },
                     {
@@ -262,6 +263,7 @@ class TpdbScraper(_PluginBase):
                             "placeholder": "https://fansdb.cc/graphql|你的key\nhttps://另一个实例/graphql|另一个key",
                             "hint": "ThePornDB 和 StashDB 都未命中时，按顺序回退到这些端点。可任意添加多个。",
                             "persistentHint": True,
+                            "class": "mt-4",
                         },
                     },
                     {
