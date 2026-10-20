@@ -95,8 +95,7 @@ class TpdbScraper(_PluginBase):
     _batch_size = 50
     _stashdb_enabled = False
     _stashdb_api_key = ""
-    _stashbox_extra_endpoint = ""
-    _stashbox_extra_key = ""
+    _extra_stashbox_endpoints: List[Tuple[str, str]] = []
 
     def init_plugin(self, config: Optional[Dict[str, Any]] = None) -> None:
         """根据插件配置初始化运行状态。"""
@@ -110,8 +109,7 @@ class TpdbScraper(_PluginBase):
         self._batch_size = 50
         self._stashdb_enabled = False
         self._stashdb_api_key = ""
-        self._stashbox_extra_endpoint = ""
-        self._stashbox_extra_key = ""
+        self._extra_stashbox_endpoints = []
         if not config:
             return
         self._enabled = bool(config.get("enabled"))
@@ -127,8 +125,20 @@ class TpdbScraper(_PluginBase):
         self._download_poster = bool(config.get("download_poster", True))
         self._stashdb_enabled = bool(config.get("stashdb_enabled"))
         self._stashdb_api_key = str(config.get("stashdb_api_key") or "").strip()
-        self._stashbox_extra_endpoint = str(config.get("stashbox_extra_endpoint") or "").strip()
-        self._stashbox_extra_key = str(config.get("stashbox_extra_key") or "").strip()
+        # 解析额外 stash-box 端点列表（每行 endpoint|key 或 endpoint,key，可任意多个）。
+        self._extra_stashbox_endpoints = []
+        raw_extra = config.get("extra_stashbox_endpoints") or ""
+        for line in str(raw_extra).splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = re.split(r"[|,]", line, maxsplit=1)
+            if len(parts) != 2:
+                continue
+            endpoint = parts[0].strip()
+            api_key = parts[1].strip()
+            if endpoint and api_key:
+                self._extra_stashbox_endpoints.append((endpoint, api_key))
         try:
             self._interval_minutes = int(config.get("interval_minutes") or 10)
         except (TypeError, ValueError):
@@ -244,22 +254,14 @@ class TpdbScraper(_PluginBase):
                         },
                     },
                     {
-                        "component": "VTextField",
+                        "component": "VTextarea",
                         "props": {
-                            "model": "stashbox_extra_endpoint",
-                            "label": "额外 Stash-box 端点",
-                            "placeholder": "https://fansdb.cc/graphql（可选）",
-                            "hint": "额外 stash-box 实例的 GraphQL 地址，留空则不启用。",
+                            "model": "extra_stashbox_endpoints",
+                            "label": "额外备用 Stash-box 端点（每行一个，格式 端点|APIKey）",
+                            "rows": 3,
+                            "placeholder": "https://fansdb.cc/graphql|你的key\nhttps://另一个实例/graphql|另一个key",
+                            "hint": "ThePornDB 和 StashDB 都未命中时，按顺序回退到这些端点。可任意添加多个。",
                             "persistentHint": True,
-                        },
-                    },
-                    {
-                        "component": "VTextField",
-                        "props": {
-                            "model": "stashbox_extra_key",
-                            "label": "额外 Stash-box API Key",
-                            "placeholder": "对应端点的 API key（可选）",
-                            "type": "password",
                         },
                     },
                     {
@@ -294,8 +296,7 @@ class TpdbScraper(_PluginBase):
             "download_poster": True,
             "stashdb_enabled": False,
             "stashdb_api_key": "",
-            "stashbox_extra_endpoint": "",
-            "stashbox_extra_key": "",
+            "extra_stashbox_endpoints": "",
             "interval_minutes": 10,
             "batch_size": 50,
         }
@@ -625,11 +626,13 @@ class TpdbScraper(_PluginBase):
         :param title: 清理后的标题。
         :return: 规范化后的场景资源字典，未命中返回 None。
         """
-        endpoints = [("https://stashdb.org/graphql", self._stashdb_api_key)]
-        extra = getattr(self, "_stashbox_extra_endpoint", "")
-        extra_key = getattr(self, "_stashbox_extra_key", "")
-        if extra and extra_key:
-            endpoints.append((extra, extra_key))
+        endpoints: List[Tuple[str, str]] = []
+        if self._stashdb_api_key:
+            endpoints.append(("https://stashdb.org/graphql", self._stashdb_api_key))
+        # 追加用户配置的再多备用端点（列表，可任意多个）。
+        for endpoint, api_key in self._extra_stashbox_endpoints:
+            if endpoint and api_key:
+                endpoints.append((endpoint, api_key))
         for endpoint, api_key in endpoints:
             if not api_key:
                 continue
