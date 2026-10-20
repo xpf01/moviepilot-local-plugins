@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -30,6 +31,23 @@ from app.schemas.types import EventType
 _TPDB_API = "https://api.theporndb.net"
 # 单次请求的默认每页条数。
 _PER_PAGE = 5
+# 相邻两次请求的最小间隔（秒），用于温和限速，避免触发限流。
+_REQUEST_MIN_INTERVAL = 0.5
+# 上次请求的时间戳（模块级，用于串行限速）。
+_last_request_ts = 0.0
+# 后台海报下载线程池（模块级，异步下载不阻塞主刮削流程）。
+_poster_executor: Optional[ThreadPoolExecutor] = None
+
+
+def _get_poster_executor() -> ThreadPoolExecutor:
+    """获取（并按需创建）后台海报下载线程池。
+
+    :return: 全局海报下载线程池。
+    """
+    global _poster_executor
+    if _poster_executor is None:
+        _poster_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tpdb-poster")
+    return _poster_executor
 # 视频文件扩展名，用于判断目录内是否存在视频。
 _VIDEO_EXTS = {".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".iso", ".wmv",
                ".mov", ".rmvb", ".flv", ".m4v", ".webm", ".mpg", ".mpeg"}
@@ -255,7 +273,11 @@ class TpdbScraper(_PluginBase):
         ]
 
     def stop_service(self) -> None:
-        """停止插件后台服务。"""
+        """停止插件后台服务，关闭海报下载线程池。"""
+        global _poster_executor
+        if _poster_executor is not None:
+            _poster_executor.shutdown(wait=False, cancel_futures=False)
+            _poster_executor = None
         return None
 
     def get_service(self) -> List[Dict[str, Any]]:
@@ -452,21 +474,65 @@ class TpdbScraper(_PluginBase):
     # ThePornDB API 调用
     # ------------------------------------------------------------------ #
 
-    def _request(self, endpoint: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """调用 ThePornDB REST API。
+    def _request(self, endpoint: str, params: Dict[str, Any],
+                 retries: int = 3) -> Dict[str, Any]:
+        """调用 ThePornDB REST API，带限流退避。
+
+        遇到 429（限流）或 5xx（服务端错误）时按指数退避重试，
+        避免连续请求触发更严厉的限流。
 
         :param endpoint: 端点路径，如 /scenes。
         :param params: 查询参数。
+        :param retries: 最大重试次数。
         :return: 解析后的 JSON 响应。
         """
+        # 温和限速：保证相邻请求间隔至少 _REQUEST_MIN_INTERVAL 秒。
+        global _last_request_ts
+        elapsed = time.time() - _last_request_ts
+        if elapsed < _REQUEST_MIN_INTERVAL:
+            time.sleep(_REQUEST_MIN_INTERVAL - elapsed)
+        _last_request_ts = time.time()
+
         url = f"{_TPDB_API}{endpoint}?{urllib.parse.urlencode(params)}"
         req = urllib.request.Request(url, headers={
             "Authorization": f"Bearer {self._api_token}",
             "Accept": "application/json",
             "User-Agent": "MoviePilot-TpdbScraper/1.0",
         })
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        last_exc: Optional[Exception] = None
+        for attempt in range(retries + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                last_exc = exc
+                if exc.code in (401, 403):
+                    # 鉴权失败，重试无意义，直接抛给上层。
+                    raise
+                if exc.code == 429 or 500 <= exc.code < 600:
+                    # 限流或服务端错误：退避后重试。
+                    if attempt < retries:
+                        delay = 2 ** attempt * 2  # 2、4、8 秒
+                        logger.warning(
+                            "ThePornDB 成人刮削：HTTP %d 限流/服务端错误，%d 秒后重试（第 %d/%d 次）",
+                            exc.code, delay, attempt + 1, retries)
+                        time.sleep(delay)
+                        continue
+                # 其他 HTTP 错误不重试。
+                raise
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt < retries:
+                    delay = 2 ** attempt * 2
+                    logger.warning(
+                        "ThePornDB 成人刮削：请求异常 %s，%d 秒后重试（第 %d/%d 次）",
+                        exc, delay, attempt + 1, retries)
+                    time.sleep(delay)
+                    continue
+                raise
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("ThePornDB 请求失败")
 
     def _search(self, title: str, kind: str) -> Optional[Dict[str, Any]]:
         """按标题在指定类别下搜索 ThePornDB。
@@ -582,23 +648,18 @@ class TpdbScraper(_PluginBase):
         logger.info("ThePornDB 成人刮削：已写入演员级 movie.nfo：%s", entry_dir / "movie.nfo")
 
     def _download_actor_image(self, performer: Dict[str, Any], entry_dir: Path) -> None:
-        """下载演员头像保存为 poster.jpg。
+        """将演员头像下载任务提交到后台线程池，不阻塞主流程。
 
         :param performer: ThePornDB 演员资源字典。
         :param entry_dir: 条目目录路径。
         """
-        if (entry_dir / "poster.jpg").exists():
+        target = entry_dir / "poster.jpg"
+        if target.exists():
             return
         image = performer.get("image") or performer.get("thumbnail") or ""
         if not image:
             return
-        try:
-            req = urllib.request.Request(image, headers={"User-Agent": "MoviePilot-TpdbScraper/1.0"})
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                (entry_dir / "poster.jpg").write_bytes(resp.read())
-            logger.info("ThePornDB 成人刮削：已下载演员头像：%s", entry_dir / "poster.jpg")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("ThePornDB 成人刮削：演员头像下载失败 %s：%s", image, exc)
+        _get_poster_executor().submit(self._fetch_poster, image, target)
 
     @staticmethod
     def _is_reliable_match(dirname: str, resource: Dict[str, Any], kind: str) -> bool:
@@ -705,26 +766,36 @@ class TpdbScraper(_PluginBase):
         nfo_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         logger.info("ThePornDB 成人刮削：已写入 movie.nfo：%s", nfo_path)
 
+    @staticmethod
+    def _fetch_poster(image: str, target: Path) -> None:
+        """后台下载单张海报并保存到目标路径（供线程池调用）。
+
+        :param image: 海报图片 URL。
+        :param target: 目标文件路径（通常为 poster.jpg）。
+        """
+        try:
+            req = urllib.request.Request(
+                image, headers={"User-Agent": "MoviePilot-TpdbScraper/1.0"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                target.write_bytes(resp.read())
+            logger.info("ThePornDB 成人刮削：已下载海报：%s", target)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ThePornDB 成人刮削：海报下载失败 %s：%s", image, exc)
+
     def _download_image(self, resource: Dict[str, Any], entry_dir: Path) -> None:
-        """下载海报并保存为 poster.jpg。
+        """将海报下载任务提交到后台线程池，不阻塞主刮削流程。
 
         :param resource: ThePornDB 资源字典。
         :param entry_dir: 条目目录路径。
         """
-        if (entry_dir / "poster.jpg").exists():
+        target = entry_dir / "poster.jpg"
+        if target.exists():
             return
         image = resource.get("poster") or resource.get("poster_image") \
             or resource.get("image") or ""
         if not image:
             return
-        try:
-            req = urllib.request.Request(
-                image, headers={"User-Agent": "MoviePilot-TpdbScraper/1.0"})
-            with urllib.request.urlopen(req, timeout=20) as resp:
-                (entry_dir / "poster.jpg").write_bytes(resp.read())
-            logger.info("ThePornDB 成人刮削：已下载海报：%s", entry_dir / "poster.jpg")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("ThePornDB 成人刮削：海报下载失败 %s：%s", image, exc)
+        _get_poster_executor().submit(self._fetch_poster, image, target)
 
     # ------------------------------------------------------------------ #
     # 识别与辅助
@@ -777,11 +848,13 @@ class TpdbScraper(_PluginBase):
         # 去网站后缀（.com / .net / .org 等）。
         title = re.sub(r"\.(com|net|org|tv|info)\b", " ", title, flags=re.IGNORECASE)
         # 剥离论坛/网盘套皮前缀：形如 发布者@论坛@真正标题。
-        title = re.sub(r"^[^@\s]+@[^@\s]+@\s*", " ", title)
-        title = re.sub(r"^\s*[^@\s]+@[^@\s]+@\s*", " ", title)
+        # 连续用 @ 分段，取最后一段作为真正标题（前段多为发布者/论坛标识）。
+        parts = [p for p in title.split("@") if p.strip()]
+        if len(parts) >= 2:
+            title = parts[-1].strip()
         # 去掉论坛/网盘中文明示词与网盘标记。
         title = re.sub(
-            r"[\s_\-]*(草榴社区|草榴|第一会所|六月天空|sexinsex|t66y|18p2p|baidu|115|夸克|阿里云盘|度盘)[\s_\-]*",
+            r"[\s_\-]*(草榴社区|草榴社區|草榴|第一会所|六月天空|sexinsex|t66y|18p2p|baidu|115|夸克|阿里云盘|度盘|單掛|資訊交流網|色中色|sex8|情色|成人论坛)[\s_\-]*",
             " ", title, flags=re.IGNORECASE)
         # 去无意义词（合集包、空目录名、集数标记等，不含数字尾部处理）。
         title = re.sub(r"\b(megapack|mega[ _-]?pack|pack|by \w+|videos)\b",
@@ -790,6 +863,12 @@ class TpdbScraper(_PluginBase):
         title = re.sub(r"\(\s*\)", " ", title)
         title = re.sub(r"\[\s*\]", " ", title)
         title = re.sub(r"\s+", " ", title).strip(" -_.")
+        # 若残留仍含中文，提取其中的英文/数字片段作为搜索标题
+        # （ThePornDB 只收录西文标题，中文描述无法命中）。
+        if re.search(r"[\u4e00-\u9fff]", title):
+            eng_parts = re.findall(r"[A-Za-z0-9][A-Za-z0-9'.& \-]*[A-Za-z0-9]", title)
+            if eng_parts:
+                title = " ".join(p.strip(" -_.") for p in eng_parts if p.strip(" -_."))
         return title or dirname
 
     @staticmethod
