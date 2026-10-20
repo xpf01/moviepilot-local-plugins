@@ -95,6 +95,8 @@ class TpdbScraper(_PluginBase):
     _batch_size = 50
     _stashdb_enabled = False
     _stashdb_api_key = ""
+    _stashbox_extra_endpoint = ""
+    _stashbox_extra_key = ""
 
     def init_plugin(self, config: Optional[Dict[str, Any]] = None) -> None:
         """根据插件配置初始化运行状态。"""
@@ -108,6 +110,8 @@ class TpdbScraper(_PluginBase):
         self._batch_size = 50
         self._stashdb_enabled = False
         self._stashdb_api_key = ""
+        self._stashbox_extra_endpoint = ""
+        self._stashbox_extra_key = ""
         if not config:
             return
         self._enabled = bool(config.get("enabled"))
@@ -123,6 +127,8 @@ class TpdbScraper(_PluginBase):
         self._download_poster = bool(config.get("download_poster", True))
         self._stashdb_enabled = bool(config.get("stashdb_enabled"))
         self._stashdb_api_key = str(config.get("stashdb_api_key") or "").strip()
+        self._stashbox_extra_endpoint = str(config.get("stashbox_extra_endpoint") or "").strip()
+        self._stashbox_extra_key = str(config.get("stashbox_extra_key") or "").strip()
         try:
             self._interval_minutes = int(config.get("interval_minutes") or 10)
         except (TypeError, ValueError):
@@ -240,6 +246,25 @@ class TpdbScraper(_PluginBase):
                     {
                         "component": "VTextField",
                         "props": {
+                            "model": "stashbox_extra_endpoint",
+                            "label": "额外 Stash-box 端点",
+                            "placeholder": "https://fansdb.cc/graphql（可选）",
+                            "hint": "额外 stash-box 实例的 GraphQL 地址，留空则不启用。",
+                            "persistentHint": True,
+                        },
+                    },
+                    {
+                        "component": "VTextField",
+                        "props": {
+                            "model": "stashbox_extra_key",
+                            "label": "额外 Stash-box API Key",
+                            "placeholder": "对应端点的 API key（可选）",
+                            "type": "password",
+                        },
+                    },
+                    {
+                        "component": "VTextField",
+                        "props": {
                             "model": "interval_minutes",
                             "label": "定时刮削间隔（分钟）",
                             "placeholder": "10",
@@ -269,6 +294,8 @@ class TpdbScraper(_PluginBase):
             "download_poster": True,
             "stashdb_enabled": False,
             "stashdb_api_key": "",
+            "stashbox_extra_endpoint": "",
+            "stashbox_extra_key": "",
             "interval_minutes": 10,
             "batch_size": 50,
         }
@@ -590,11 +617,35 @@ class TpdbScraper(_PluginBase):
         return None
 
     def _search_stashdb(self, title: str) -> Optional[Dict[str, Any]]:
-        """在 StashDB（Stash-box）补充源中按标题搜索场景。
+        """在已配置的 Stash-box 端点中按标题搜索场景（按顺序回退）。
 
-        调用 stashdb.org 的 GraphQL searchScenes 查询，将命中的首个场景
-        转换为与 ThePornDB 资源一致的字段结构，供后续写 NFO 复用。
+        先查 StashDB（stashdb.org），未命中时若配置了额外 stash-box 端点
+        （如 FansDB），再回退到额外端点搜索。
 
+        :param title: 清理后的标题。
+        :return: 规范化后的场景资源字典，未命中返回 None。
+        """
+        endpoints = [("https://stashdb.org/graphql", self._stashdb_api_key)]
+        extra = getattr(self, "_stashbox_extra_endpoint", "")
+        extra_key = getattr(self, "_stashbox_extra_key", "")
+        if extra and extra_key:
+            endpoints.append((extra, extra_key))
+        for endpoint, api_key in endpoints:
+            if not api_key:
+                continue
+            resource = self._search_stashbox(endpoint, api_key, title)
+            if resource is not None:
+                return resource
+        return None
+
+    def _search_stashbox(self, endpoint: str, api_key: str, title: str) -> Optional[Dict[str, Any]]:
+        """在单个 Stash-box 端点中按标题搜索场景。
+
+        调用 stash-box GraphQL searchScenes 查询，将命中的首个场景转换为
+        与 ThePornDB 资源一致的字段结构，供后续写 NFO 复用。
+
+        :param endpoint: Stash-box GraphQL 端点地址，如 https://stashdb.org/graphql。
+        :param api_key: 该端点的 API key。
         :param title: 清理后的标题。
         :return: 规范化后的场景资源字典，未命中返回 None。
         """
@@ -613,11 +664,11 @@ class TpdbScraper(_PluginBase):
         )
         payload = json.dumps({"query": query, "variables": {"term": title}}).encode("utf-8")
         req = urllib.request.Request(
-            "https://stashdb.org/graphql",
+            endpoint,
             data=payload,
             headers={
                 "Content-Type": "application/json",
-                "ApiKey": self._stashdb_api_key,
+                "ApiKey": api_key,
                 "User-Agent": "MoviePilot-TpdbScraper/1.0",
             },
             method="POST",
@@ -626,7 +677,7 @@ class TpdbScraper(_PluginBase):
             with urllib.request.urlopen(req, timeout=20) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("StashDB 成人刮削：搜索失败 %s：%s", title, exc)
+            logger.warning("Stash-box 搜索失败 %s（%s）：%s", endpoint, title, exc)
             return None
         result = ((data or {}).get("data") or {}).get("searchScenes") or {}
         scenes = result.get("scenes") or []
