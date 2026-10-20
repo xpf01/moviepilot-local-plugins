@@ -26,6 +26,8 @@ from app.plugins import _PluginBase
 from app.sdk.events import Event, eventmanager
 from app.sdk.logging import logger
 from app.schemas.types import EventType
+from app.sdk.config import settings
+from apscheduler.triggers.cron import CronTrigger
 
 # ThePornDB REST API 根地址。
 _TPDB_API = "https://api.theporndb.net"
@@ -91,8 +93,9 @@ class TpdbScraper(_PluginBase):
     _library_dirs: List[str] = []
     _overwrite_nfo = False
     _download_poster = True
-    _interval_minutes = 10
+    _interval_minutes = 1440
     _batch_size = 50
+    _scrape_hour = 2
     _stashdb_enabled = False
     _stashdb_api_key = ""
     _extra_stashbox_endpoints: List[Tuple[str, str]] = []
@@ -105,8 +108,9 @@ class TpdbScraper(_PluginBase):
         self._library_dirs = []
         self._overwrite_nfo = False
         self._download_poster = True
-        self._interval_minutes = 10
+        self._interval_minutes = 1440
         self._batch_size = 50
+        self._scrape_hour = 2
         self._stashdb_enabled = False
         self._stashdb_api_key = ""
         self._extra_stashbox_endpoints = []
@@ -140,9 +144,11 @@ class TpdbScraper(_PluginBase):
             if endpoint and api_key:
                 self._extra_stashbox_endpoints.append((endpoint, api_key))
         try:
-            self._interval_minutes = int(config.get("interval_minutes") or 10)
+            self._scrape_hour = int(config.get("scrape_hour") or 2)
+            if self._scrape_hour < 0 or self._scrape_hour > 23:
+                self._scrape_hour = 2
         except (TypeError, ValueError):
-            self._interval_minutes = 10
+            self._scrape_hour = 2
         try:
             self._batch_size = int(config.get("batch_size") or 50)
         except (TypeError, ValueError):
@@ -269,10 +275,10 @@ class TpdbScraper(_PluginBase):
                     {
                         "component": "VTextField",
                         "props": {
-                            "model": "interval_minutes",
-                            "label": "定时刮削间隔（分钟）",
-                            "placeholder": "10",
-                            "hint": "每轮之间的等待时间，默认 10 分钟。",
+                            "model": "scrape_hour",
+                            "label": "每日刮削时间（小时，0-23）",
+                            "placeholder": "2",
+                            "hint": "每天在这个整点运行一次，2 = 凌晨 2 点。",
                             "persistentHint": True,
                             "class": "mt-6",
                         },
@@ -299,7 +305,7 @@ class TpdbScraper(_PluginBase):
             "stashdb_enabled": False,
             "stashdb_api_key": "",
             "extra_stashbox_endpoints": "",
-            "interval_minutes": 10,
+            "scrape_hour": 2,
             "batch_size": 50,
         }
 
@@ -339,18 +345,23 @@ class TpdbScraper(_PluginBase):
     def get_service(self) -> List[Dict[str, Any]]:
         """返回插件定时服务，用于增量刮削。
 
-        每 interval_minutes 分钟运行一次，每次处理最多 batch_size 个
-        尚未生成 movie.nfo 的条目目录，直到全库消化完，之后自然转为增量。
+        每天在配置的整点（默认凌晨 2 点）运行一次，处理尚未生成 movie.nfo
+        的条目目录；对「未命中」目录采用降频重试。
         """
         if not self._enabled or not self._api_token:
             return []
+        hour = getattr(self, "_scrape_hour", 2)
+        try:
+            trigger = CronTrigger.from_crontab(f"0 {hour} * * *", timezone=settings.TZ)
+        except Exception:  # noqa: BLE001
+            trigger = CronTrigger.from_crontab("0 2 * * *")
         return [
             {
                 "id": "TpdbScraperIncremental",
                 "name": f"{self.plugin_name}增量刮削",
-                "trigger": "interval",
+                "trigger": trigger,
                 "func": self.incremental_scrape,
-                "kwargs": {"minutes": self._interval_minutes},
+                "kwargs": {},
             }
         ]
 
