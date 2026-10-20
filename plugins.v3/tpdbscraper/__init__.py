@@ -93,6 +93,8 @@ class TpdbScraper(_PluginBase):
     _download_poster = True
     _interval_minutes = 10
     _batch_size = 50
+    _stashdb_enabled = False
+    _stashdb_api_key = ""
 
     def init_plugin(self, config: Optional[Dict[str, Any]] = None) -> None:
         """根据插件配置初始化运行状态。"""
@@ -104,6 +106,8 @@ class TpdbScraper(_PluginBase):
         self._download_poster = True
         self._interval_minutes = 10
         self._batch_size = 50
+        self._stashdb_enabled = False
+        self._stashdb_api_key = ""
         if not config:
             return
         self._enabled = bool(config.get("enabled"))
@@ -117,6 +121,8 @@ class TpdbScraper(_PluginBase):
             ]
         self._overwrite_nfo = bool(config.get("overwrite_nfo"))
         self._download_poster = bool(config.get("download_poster", True))
+        self._stashdb_enabled = bool(config.get("stashdb_enabled"))
+        self._stashdb_api_key = str(config.get("stashdb_api_key") or "").strip()
         try:
             self._interval_minutes = int(config.get("interval_minutes") or 10)
         except (TypeError, ValueError):
@@ -214,6 +220,24 @@ class TpdbScraper(_PluginBase):
                         },
                     },
                     {
+                        "component": "VSwitch",
+                        "props": {
+                            "model": "stashdb_enabled",
+                            "label": "启用 StashDB 补充源",
+                            "hint": "ThePornDB 未命中时回退到 StashDB 搜索。",
+                            "persistentHint": True,
+                        },
+                    },
+                    {
+                        "component": "VTextField",
+                        "props": {
+                            "model": "stashdb_api_key",
+                            "label": "StashDB API Key",
+                            "placeholder": "在 stashdb.org 个人页复制（可选）",
+                            "type": "password",
+                        },
+                    },
+                    {
                         "component": "VTextField",
                         "props": {
                             "model": "interval_minutes",
@@ -243,6 +267,8 @@ class TpdbScraper(_PluginBase):
             "library_dirs": "/media/XXX",
             "overwrite_nfo": False,
             "download_poster": True,
+            "stashdb_enabled": False,
+            "stashdb_api_key": "",
             "interval_minutes": 10,
             "batch_size": 50,
         }
@@ -558,7 +584,73 @@ class TpdbScraper(_PluginBase):
             items = (data or {}).get("data") or []
             if items:
                 return items[0]
+        # ThePornDB 未命中时，回退到 StashDB 补充源。
+        if self._stashdb_enabled and self._stashdb_api_key:
+            return self._search_stashdb(title)
         return None
+
+    def _search_stashdb(self, title: str) -> Optional[Dict[str, Any]]:
+        """在 StashDB（Stash-box）补充源中按标题搜索场景。
+
+        调用 stashdb.org 的 GraphQL searchScenes 查询，将命中的首个场景
+        转换为与 ThePornDB 资源一致的字段结构，供后续写 NFO 复用。
+
+        :param title: 清理后的标题。
+        :return: 规范化后的场景资源字典，未命中返回 None。
+        """
+        query = (
+            "query Scenes($term: String!) {"
+            "  searchScenes(term: $term) {"
+            "    count"
+            "    scenes { id title details release_date code"
+            "      studio { name }"
+            "      performers { performer { name } }"
+            "      tags { name }"
+            "      images { url }"
+            "    }"
+            "  }"
+            "}"
+        )
+        payload = json.dumps({"query": query, "variables": {"term": title}}).encode("utf-8")
+        req = urllib.request.Request(
+            "https://stashdb.org/graphql",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "ApiKey": self._stashdb_api_key,
+                "User-Agent": "MoviePilot-TpdbScraper/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("StashDB 成人刮削：搜索失败 %s：%s", title, exc)
+            return None
+        result = ((data or {}).get("data") or {}).get("searchScenes") or {}
+        scenes = result.get("scenes") or []
+        if not scenes:
+            return None
+        scene = scenes[0]
+        # 转换为与 ThePornDB 资源一致的字段结构。
+        studio = scene.get("studio") or {}
+        performers = scene.get("performers") or []
+        tags = scene.get("tags") or []
+        images = scene.get("images") or []
+        poster = images[0].get("url") if images else ""
+        return {
+            "id": scene.get("id") or "",
+            "title": scene.get("title") or "",
+            "description": scene.get("details") or "",
+            "date": scene.get("release_date") or "",
+            "site": {"name": studio.get("name") or ""},
+            "performers": [{"name": p.get("performer", {}).get("name") or ""}
+                           for p in performers if isinstance(p, dict)],
+            "tags": [{"name": t.get("name") or ""} for t in tags if isinstance(t, dict)],
+            "poster": poster,
+            "slug": scene.get("code") or "",
+        }
 
     @staticmethod
     def _endpoints_for(kind: str) -> List[str]:
