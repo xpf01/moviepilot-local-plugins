@@ -357,15 +357,14 @@ class TpdbScraper(_PluginBase):
     def incremental_scrape(self) -> None:
         """增量刮削：处理一批尚未生成 movie.nfo 的条目目录。
 
-        每次运行处理最多 batch_size 个目录，未命中或已刮削的目录会被
-        持久化记录，避免重复处理。
+        对「未命中」的目录采用降频重试：冷却期按 2、4、7 天指数退避，
+        封顶 7 天后固定每 7 天复查一次，避免每轮反复空搜，同时保留未来
+        数据源补录后能被重新命中。
         """
         if not self._enabled or not self._api_token:
             return
-        # 读取已处理目录记录（复用进度文件思路，用插件数据保存）
-        processed = self.get_data("processed_dirs") or []
-        processed_set = set(processed)
-
+        missed = self.get_data("missed_dirs") or {}
+        now = time.time()
         batch_left = max(1, self._batch_size)
         for lib_dir in self._library_dirs:
             root = Path(lib_dir)
@@ -375,27 +374,57 @@ class TpdbScraper(_PluginBase):
                 if batch_left <= 0:
                     break
                 key = str(entry)
-                if key in processed_set:
-                    continue
-                # 已有 movie.nfo 且不覆盖，视为已处理
+                # 已有 movie.nfo 且不覆盖，视为已完成，清理其未命中记录。
                 if (entry / "movie.nfo").exists() and not self._overwrite_nfo:
-                    processed_set.add(key)
-                    processed.append(key)
+                    missed.pop(key, None)
+                    continue
+                # 在冷却期内的未命中目录，本轮流过。
+                if key in missed and not self._miss_due(missed[key], now):
                     continue
                 try:
-                    self.scrape_one(entry)
+                    matched = self.scrape_one(entry)
                 except Exception as exc:  # noqa: BLE001
                     logger.error("ThePornDB 成人刮削：增量刮削失败 %s：%s", entry, exc)
-                processed_set.add(key)
-                processed.append(key)
+                    matched = False
+                if matched:
+                    missed.pop(key, None)
+                else:
+                    self._record_miss(missed, key, now)
                 batch_left -= 1
             if batch_left <= 0:
                 break
 
-        # 控制持久化规模，仅保留最近处理记录
-        self.save_data("processed_dirs", processed[-50000:])
-        logger.info("ThePornDB 成人刮削：增量刮削一轮完成，累计处理 %d 个目录",
-                    len(processed))
+        self.save_data("missed_dirs", missed)
+        logger.info("ThePornDB 成人刮削：增量刮削一轮完成，未命中清单 %d 个目录",
+                    len(missed))
+
+    @staticmethod
+    def _miss_due(record: Dict[str, Any], now: float) -> bool:
+        """判断未命中目录是否已过冷却期，可以重试。
+
+        冷却期 = min(2 ** fails, 7) 天，按上次尝试时间计算。
+
+        :param record: 未命中记录，含 tried_at 与 fails。
+        :param now: 当前时间戳。
+        :return: 是否已过冷却期。
+        """
+        fails = int(record.get("fails", 0) or 0)
+        cooldown_days = min(2 ** fails, 7)
+        cooldown_secs = cooldown_days * 86400
+        tried_at = float(record.get("tried_at", 0) or 0)
+        return (now - tried_at) >= cooldown_secs
+
+    @staticmethod
+    def _record_miss(missed: Dict[str, Any], key: str, now: float) -> None:
+        """记录一次未命中，累计失败次数并刷新尝试时间。
+
+        :param missed: 未命中清单字典。
+        :param key: 目录路径。
+        :param now: 当前时间戳。
+        """
+        rec = missed.get(key) or {}
+        fails = int(rec.get("fails", 0) or 0) + 1
+        missed[key] = {"tried_at": now, "fails": fails}
 
     # ------------------------------------------------------------------ #
     # 事件处理
