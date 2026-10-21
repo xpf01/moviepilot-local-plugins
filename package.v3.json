@@ -50,5 +50,18 @@
     "history": {
       "v1.0.0": "初始版本：ThePornDB REST API 刮削，Scene/JAV/Movie 智能探测，NFO 落盘+海报下载，联邦 UI"
     }
+  },
+  "QnapStorageMonitor": {
+    "name": "QNAP存储池监控",
+    "description": "定时 SSH 连接 QNAP 宿主机，监控存储池剩余容量，低于阈值暂停下载、高于阈值自动恢复，并推送告警。",
+    "labels": "系统工具,监控,存储",
+    "version": "1.0.0",
+    "icon": "qnapstoragemonitor.png",
+    "author": "local",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v1.0.0": "初始版本：定时监控 QNAP 存储池容量，双阈值控制暂停/恢复下载，通知告警"
+    }
   }
 }
