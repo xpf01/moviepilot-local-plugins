@@ -436,7 +436,7 @@ class QnapStorageMonitor(_PluginBase):
         cmd = (
             f"sshpass -p {_shell_quote(self._password)} "
             f"ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 "
-            f"-p {self._port} {self._username}@{self._host} 'df -h'"
+            f"-p {self._port} {self._username}@{self._host} 'df -hP 2>/dev/null'"
         )
         try:
             proc = subprocess.run(
@@ -447,9 +447,6 @@ class QnapStorageMonitor(_PluginBase):
             return None
         except Exception as exc:  # pragma: no cover
             logger.error("QNAP存储池监控：SSH 执行异常 %s", exc)
-            return None
-        if proc.returncode != 0:
-            logger.error("QNAP存储池监控：SSH 返回码 %s，输出 %s", proc.returncode, proc.stderr)
             return None
 
         pools: List[Tuple[str, float, float, float]] = []
@@ -479,6 +476,11 @@ class QnapStorageMonitor(_PluginBase):
                 continue
             seen.add(item[0])
             dedup.append(item)
+        # 解析不出任何存储池数据才判为连接失败（QNAP 的 df 会因无权限 socket 返回码非 0，但 stdout 数据正常）
+        if not dedup and not proc.stdout.strip():
+            logger.error("QNAP存储池监控：SSH 无有效输出（返回码 %s，stderr %s）",
+                         proc.returncode, proc.stderr)
+            return None
         return dedup
 
     def _resolve_pool_name(self, dev: str, mount: str) -> Optional[str]:

@@ -98,6 +98,10 @@ class TpdbScraper(_PluginBase):
     _scrape_hour = 2
     _stashdb_enabled = False
     _stashdb_api_key = ""
+    _tpdb_use_proxy = False
+    _tpdb_proxy = ""
+    _stashbox_use_proxy = False
+    _stashbox_proxy = ""
     _extra_stashbox_endpoints: List[Tuple[str, str]] = []
 
     def init_plugin(self, config: Optional[Dict[str, Any]] = None) -> None:
@@ -129,6 +133,10 @@ class TpdbScraper(_PluginBase):
         self._download_poster = bool(config.get("download_poster", True))
         self._stashdb_enabled = bool(config.get("stashdb_enabled"))
         self._stashdb_api_key = str(config.get("stashdb_api_key") or "").strip()
+        self._tpdb_use_proxy = bool(config.get("tpdb_use_proxy"))
+        self._tpdb_proxy = str(config.get("tpdb_proxy") or "").strip()
+        self._stashbox_use_proxy = bool(config.get("stashbox_use_proxy"))
+        self._stashbox_proxy = str(config.get("stashbox_proxy") or "").strip()
         # 解析额外 stash-box 端点列表（每行 endpoint|key 或 endpoint,key，可任意多个）。
         self._extra_stashbox_endpoints = []
         raw_extra = config.get("extra_stashbox_endpoints") or ""
@@ -219,6 +227,25 @@ class TpdbScraper(_PluginBase):
                         },
                     },
                     {
+                        "component": "VSwitch",
+                        "props": {
+                            "model": "tpdb_use_proxy",
+                            "label": "ThePornDB 主源走代理",
+                            "hint": "开启后主源 ThePornDB 请求走下方代理地址；直连不通时再开启。",
+                            "persistentHint": True,
+                        },
+                    },
+                    {
+                        "component": "VTextField",
+                        "props": {
+                            "model": "tpdb_proxy",
+                            "label": "ThePornDB 代理地址",
+                            "placeholder": "http://192.168.1.2:7893",
+                            "hint": "仅在开启「ThePornDB 主源走代理」时生效。",
+                            "persistentHint": True,
+                        },
+                    },
+                    {
                         "component": "VTextarea",
                         "props": {
                             "model": "library_dirs",
@@ -273,6 +300,27 @@ class TpdbScraper(_PluginBase):
                         },
                     },
                     {
+                        "component": "VSwitch",
+                        "props": {
+                            "model": "stashbox_use_proxy",
+                            "label": "Stash-box 补充源走代理",
+                            "hint": "开启后 StashDB 及额外备用端点请求走下方代理地址（主源 ThePornDB 仍直连）。",
+                            "persistentHint": True,
+                            "class": "mt-4",
+                        },
+                    },
+                    {
+                        "component": "VTextField",
+                        "props": {
+                            "model": "stashbox_proxy",
+                            "label": "Stash-box 代理地址",
+                            "placeholder": "http://192.168.1.2:7893",
+                            "hint": "仅在开启「走代理」时生效。",
+                            "persistentHint": True,
+                            "class": "mt-4",
+                        },
+                    },
+                    {
                         "component": "VTextField",
                         "props": {
                             "model": "scrape_hour",
@@ -299,12 +347,16 @@ class TpdbScraper(_PluginBase):
         ], {
             "enabled": False,
             "api_token": "",
+            "tpdb_use_proxy": False,
+            "tpdb_proxy": "http://192.168.1.2:7893",
             "library_dirs": "/media/XXX",
             "overwrite_nfo": False,
             "download_poster": True,
             "stashdb_enabled": False,
             "stashdb_api_key": "",
             "extra_stashbox_endpoints": "",
+            "stashbox_use_proxy": False,
+            "stashbox_proxy": "http://192.168.1.2:7893",
             "scrape_hour": 2,
             "batch_size": 50,
         }
@@ -570,6 +622,24 @@ class TpdbScraper(_PluginBase):
     # ThePornDB API 调用
     # ------------------------------------------------------------------ #
 
+    def _build_opener(self, use_proxy: bool, proxy: str) -> Any:
+        """根据配置构造 urllib opener，可选择性走 HTTP/HTTPS 代理。
+
+        :param use_proxy: 是否启用代理。
+        :param proxy: 代理地址，如 http://192.168.1.2:7893。
+        :return: 配置好的 opener；未启用代理或地址为空时返回直连 opener。
+        """
+        if use_proxy and proxy:
+            try:
+                proxy_handler = urllib.request.ProxyHandler({
+                    "http": proxy,
+                    "https": proxy,
+                })
+                return urllib.request.build_opener(proxy_handler)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("代理配置无效 %s，改用直连", exc)
+        return urllib.request.build_opener()
+
     def _request(self, endpoint: str, params: Dict[str, Any],
                  retries: int = 3) -> Dict[str, Any]:
         """调用 ThePornDB REST API，带限流退避。
@@ -595,10 +665,11 @@ class TpdbScraper(_PluginBase):
             "Accept": "application/json",
             "User-Agent": "MoviePilot-TpdbScraper/1.0",
         })
+        opener = self._build_opener(self._tpdb_use_proxy, self._tpdb_proxy)
         last_exc: Optional[Exception] = None
         for attempt in range(retries + 1):
             try:
-                with urllib.request.urlopen(req, timeout=20) as resp:
+                with opener.open(req, timeout=20) as resp:
                     return json.loads(resp.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 last_exc = exc
@@ -718,8 +789,10 @@ class TpdbScraper(_PluginBase):
             },
             method="POST",
         )
+        # 根据配置决定是否走代理：仅对 Stash-box 补充源生效，主源 ThePornDB 单独控制。
+        opener = self._build_opener(self._stashbox_use_proxy, self._stashbox_proxy)
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            with opener.open(req, timeout=25) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Stash-box 搜索失败 %s（%s）：%s", endpoint, title, exc)
