@@ -231,8 +231,6 @@ class TpdbScraper(_PluginBase):
                         "props": {
                             "model": "tpdb_use_proxy",
                             "label": "ThePornDB 主源走代理",
-                            "hint": "开启后主源 ThePornDB 请求走下方代理地址；直连不通时再开启。",
-                            "persistentHint": True,
                         },
                     },
                     {
@@ -241,8 +239,6 @@ class TpdbScraper(_PluginBase):
                             "model": "tpdb_proxy",
                             "label": "ThePornDB 代理地址",
                             "placeholder": "http://192.168.1.2:7893",
-                            "hint": "仅在开启「ThePornDB 主源走代理」时生效。",
-                            "persistentHint": True,
                         },
                     },
                     {
@@ -273,8 +269,6 @@ class TpdbScraper(_PluginBase):
                         "props": {
                             "model": "stashdb_enabled",
                             "label": "启用 StashDB 补充源",
-                            "hint": "ThePornDB 未命中时回退到 StashDB 搜索。",
-                            "persistentHint": True,
                         },
                     },
                     {
@@ -284,7 +278,6 @@ class TpdbScraper(_PluginBase):
                             "label": "StashDB API Key",
                             "placeholder": "在 stashdb.org 个人页复制（可选）",
                             "type": "password",
-                            "class": "mt-4",
                         },
                     },
                     {
@@ -294,9 +287,6 @@ class TpdbScraper(_PluginBase):
                             "label": "额外备用 Stash-box 端点（每行一个，格式 端点|APIKey）",
                             "rows": 3,
                             "placeholder": "https://fansdb.cc/graphql|你的key\nhttps://另一个实例/graphql|另一个key",
-                            "hint": "ThePornDB 和 StashDB 都未命中时，按顺序回退到这些端点。可任意添加多个。",
-                            "persistentHint": True,
-                            "class": "mt-4",
                         },
                     },
                     {
@@ -304,9 +294,6 @@ class TpdbScraper(_PluginBase):
                         "props": {
                             "model": "stashbox_use_proxy",
                             "label": "Stash-box 补充源走代理",
-                            "hint": "开启后 StashDB 及额外备用端点请求走下方代理地址（主源 ThePornDB 仍直连）。",
-                            "persistentHint": True,
-                            "class": "mt-4",
                         },
                     },
                     {
@@ -315,9 +302,6 @@ class TpdbScraper(_PluginBase):
                             "model": "stashbox_proxy",
                             "label": "Stash-box 代理地址",
                             "placeholder": "http://192.168.1.2:7893",
-                            "hint": "仅在开启「走代理」时生效。",
-                            "persistentHint": True,
-                            "class": "mt-4",
                         },
                     },
                     {
@@ -327,8 +311,6 @@ class TpdbScraper(_PluginBase):
                             "label": "每日刮削时间（小时，0-23）",
                             "placeholder": "2",
                             "hint": "每天在这个整点运行一次，2 = 凌晨 2 点。",
-                            "persistentHint": True,
-                            "class": "mt-6",
                         },
                     },
                     {
@@ -338,8 +320,6 @@ class TpdbScraper(_PluginBase):
                             "label": "每轮刮削数量",
                             "placeholder": "50",
                             "hint": "每轮最多处理的条目数。",
-                            "persistentHint": True,
-                            "class": "mt-4",
                         },
                     },
                 ],
