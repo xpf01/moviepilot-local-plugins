@@ -118,6 +118,10 @@ def init_base_ui() -> List[dict]:
                 continue
             # 映射分组名称为独立的参数名
             model = GROUP_MODEL_MAP.get(group_name, group_name)
+            # 只保留常规筛选，砍掉 chip 数过多的「推荐/明星/奖项/剧场/殿堂」等低价值大筛选，
+            # 避免前端探索页渲染几十个筛选组导致数据列表懒加载首次不触发（需滚动才出数据）。
+            if model not in {"mode", "type", "area", "year", "pay"}:
+                continue
             chip_data = [
                 {
                     "component": "VChip",
