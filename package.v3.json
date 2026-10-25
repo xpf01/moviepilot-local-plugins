@@ -63,5 +63,18 @@
     "history": {
       "v1.0.0": "初始版本：定时监控 QNAP 存储池容量，双阈值控制暂停/恢复下载，通知告警"
     }
+  },
+  "MediaExplore": {
+    "name": "媒体探索聚合",
+    "description": "聚合多个国内视频站探索数据源（哔哩哔哩、腾讯、CCTV、芒果、咪咕、Bangumi、爱奇艺、猫眼TOP30），统一开关与管理。",
+    "labels": "探索",
+    "version": "1.0.0",
+    "icon": "mediaexplore.png",
+    "author": "local",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v1.0.0": "初始版本：聚合国内视频站探索源，统一 envelope 包装与 media_source 适配"
+    }
   }
 }
