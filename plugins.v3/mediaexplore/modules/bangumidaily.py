@@ -41,7 +41,8 @@ def __fetch_raw_bangumi_data() -> List[dict] | None:
         "Referer": "https://api.bgm.tv/",
     }
     try:
-        res = RequestUtils(headers=headers).get_res(api_url)
+        # api.bgm.tv 在国内直连被墙，强制走系统代理
+        res = RequestUtils(headers=headers, proxies=settings.PROXY).get_res(api_url)
         if res is None:
             logger.error("无法连接Bangumi每日放送，请检查网络连接！")
             return None
