@@ -82,6 +82,11 @@ class QnapStorageMonitor(_PluginBase):
         """获取插件启用状态。"""
         return self._enabled
 
+    @staticmethod
+    def get_render_mode() -> Tuple[str, Optional[str]]:
+        """声明插件使用 Vue 联邦组件渲染。"""
+        return "vue", "dist/assets"
+
     def get_service(self) -> List[Dict[str, Any]]:
         """注册插件定时服务，按配置周期轮询存储池容量。"""
         if not self._enabled or not self._host or not self._username:
@@ -95,161 +100,55 @@ class QnapStorageMonitor(_PluginBase):
         }]
 
     def get_api(self) -> List[Dict[str, Any]]:
-        """返回插件 API 列表，本插件无自定义 API。"""
-        return []
-
-    def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
-        """拼装插件配置页面与默认配置。"""
+        """返回插件 API 列表，提供状态查看与立即检查端点。"""
         return [
             {
-                "component": "VForm",
-                "content": [
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {"model": "enabled", "label": "启用插件"}
-                                    }
-                                ]
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {"model": "onlyonce", "label": "立即运行一次"}
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {"model": "host", "label": "QNAP 地址", "placeholder": "192.168.1.11"}
-                                    }
-                                ]
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {"model": "port", "label": "SSH 端口", "placeholder": "22"}
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {"model": "username", "label": "SSH 用户名", "placeholder": "admin"}
-                                    }
-                                ]
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {"model": "password", "label": "SSH 密码", "type": "password"}
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {"model": "interval_hours", "label": "轮询间隔(小时)", "placeholder": "12"}
-                                    }
-                                ]
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {"model": "stop_threshold_gb", "label": "停止下载阈值(GB)", "placeholder": "500"}
-                                    }
-                                ]
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {"model": "resume_threshold_gb", "label": "恢复下载阈值(GB)", "placeholder": "2000"}
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {"model": "auto_pause_download", "label": "低于阈值时自动暂停下载"}
-                                    }
-                                ]
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VSwitch",
-                                        "props": {"model": "monitor_all", "label": "监控全部存储池（默认仅 CACHEDEV 数据卷）"}
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        "component": "VAlert",
-                        "props": {
-                            "type": "info",
-                            "variant": "tonal",
-                            "text": "低于「停止下载阈值」时暂停下载器所有正在下载的任务（保留做种/上传）；高于「恢复下载阈值」时自动恢复。仅支持 Transmission 下载器。"
-                        }
-                    }
-                ]
-            }
-        ], {
+                "path": "/status",
+                "endpoint": self.api_status,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "查看最近检查结果与暂停状态",
+            },
+            {
+                "path": "/check_now",
+                "endpoint": self.api_check_now,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "立即执行一次容量检查",
+            },
+        ]
+
+    def api_status(self) -> Dict[str, Any]:
+        """返回插件运行状态摘要，供 Vue 详情页展示。
+
+        :return: 包含启用状态、最近检查报告与下载暂停状态的字典。
+        """
+        return {
+            "success": True,
+            "data": {
+                "enabled": self._enabled,
+                "download_paused": self._download_paused,
+                "last_report": self.get_data("last_report") or "",
+            },
+        }
+
+    def api_check_now(self) -> Dict[str, Any]:
+        """立即执行一次容量检查，供 Vue 详情页触发。"""
+        if not self._enabled:
+            return {"success": False, "message": "插件未启用"}
+        self._check_and_react()
+        return {
+            "success": True,
+            "message": "检查完成",
+            "data": {
+                "download_paused": self._download_paused,
+                "last_report": self.get_data("last_report") or "",
+            },
+        }
+
+    def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        """返回插件默认配置（Vue 模式下表单由远程 Config 组件渲染）。"""
+        return [], {
             "enabled": False,
             "host": "192.168.1.11",
             "port": 22,
@@ -260,23 +159,12 @@ class QnapStorageMonitor(_PluginBase):
             "resume_threshold_gb": 2000,
             "auto_pause_download": True,
             "monitor_all": False,
-            "onlyonce": False
+            "onlyonce": False,
         }
 
     def get_page(self) -> Optional[List[dict]]:
-        """返回插件详情页面，展示最近一次检查结果与下载暂停状态。"""
-        if not self._enabled:
-            return None
-        last_report = self.get_data("last_report")
-        paused = self._download_paused
-        lines = []
-        lines.append(f"下载任务状态：{'已暂停（等待容量恢复）' if paused else '正常'}")
-        if last_report:
-            lines.append(str(last_report))
-        return [{
-            "component": "VAlert",
-            "props": {"type": "info", "text": "\n".join(lines)}
-        }]
+        """返回插件详情页面（Vue 模式下由远程 Page 组件渲染）。"""
+        return []
 
     def stop_service(self) -> None:
         """停止插件后台服务并释放资源。"""

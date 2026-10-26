@@ -100,163 +100,28 @@ class MediaExplore(_PluginBase):
         """返回插件是否处于启用状态（任一源启用即视为启用）。"""
         return any(self.enabled_modules.values()) or self._iqiyi_enabled() or self._maoyan_enabled()
 
-    def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
-        """返回插件配置表单与默认配置。"""
-        plugin_names = "、".join(MODULE_LABELS.values())
-        form = [
-            {
-                "component": "VForm",
-                "content": [
-                    {
-                        "component": "VCard",
-                        "props": {"class": "mt-0"},
-                        "content": [
-                            {
-                                "component": "VCardTitle",
-                                "props": {"class": "d-flex align-center"},
-                                "content": [
-                                    {
-                                        "component": "VIcon",
-                                        "props": {"style": "color: #16b1ff;", "class": "mr-2"},
-                                        "text": "mdi-compass-outline"
-                                    },
-                                    {
-                                        "component": "span",
-                                        "text": "探索源开关"
-                                    }
-                                ]
-                            },
-                            {"component": "VDivider"},
-                            {
-                                "component": "VCardText",
-                                "content": [
-                                    {
-                                        "component": "VRow",
-                                        "content": [
-                                            {
-                                                "component": "VCol",
-                                                "props": {"cols": 12, "md": 4},
-                                                "content": [
-                                                    {
-                                                        "component": "VSwitch",
-                                                        "props": {
-                                                            "model": f"{name}_enabled",
-                                                            "label": f"启用{MODULE_LABELS.get(name, name)}探索源",
-                                                        },
-                                                    }
-                                                ],
-                                            }
-                                            for name in self.modules
-                                        ]
-                                        + [
-                                            {
-                                                "component": "VCol",
-                                                "props": {"cols": 12, "md": 4},
-                                                "content": [
-                                                    {
-                                                        "component": "VSwitch",
-                                                        "props": {
-                                                            "model": "iqiyi_enabled",
-                                                            "label": "启用爱奇艺探索源",
-                                                        },
-                                                    }
-                                                ],
-                                            },
-                                            {
-                                                "component": "VCol",
-                                                "props": {"cols": 12, "md": 4},
-                                                "content": [
-                                                    {
-                                                        "component": "VSwitch",
-                                                        "props": {
-                                                            "model": "maoyan_enabled",
-                                                            "label": "启用猫眼TOP30探索源",
-                                                        },
-                                                    }
-                                                ],
-                                            }
-                                        ]
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        "component": "VCard",
-                        "props": {"variant": "flat", "class": "mt-3", "color": "surface"},
-                        "content": [
-                            {
-                                "component": "VCardTitle",
-                                "props": {"class": "d-flex align-center text-h6"},
-                                "content": [
-                                    {
-                                        "component": "VIcon",
-                                        "props": {"style": "color: #16b1ff;", "class": "mr-2"},
-                                        "text": "mdi-shield-key-outline"
-                                    },
-                                    {"component": "span", "text": "爱奇艺配置"}
-                                ]
-                            },
-                            {"component": "VDivider"},
-                            {
-                                "component": "VCardText",
-                                "props": {"class": "px-6"},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "iqiyi_cookie",
-                                            "label": "爱奇艺 Cookie（可选）",
-                                            "placeholder": "留空则由 CloakBrowser 自动获取；失效时可手动填入 Cookie",
-                                            "hint": "爱奇艺接口有风控，插件会自动获取 Cookie（含 __dfp），失效后自动刷新。仅在自动获取失败时手动填入。"
-                                        }
-                                    },
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "iqiyi_refresh_cron",
-                                            "label": "Cookie 定时刷新周期（Cron 表达式，可选）",
-                                            "placeholder": "例如 0 */2 * * *（每 2 小时）",
-                                            "hint": "留空则不启用定时刷新；建议每 2 小时刷新一次"
-                                        }
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        "component": "VCard",
-                        "props": {"variant": "flat", "class": "mt-3", "color": "surface"},
-                        "content": [
-                            {
-                                "component": "VCardText",
-                                "props": {"class": "px-6"},
-                                "content": [
-                                    {
-                                        "component": "div",
-                                        "props": {"class": "text-body-1"},
-                                        "text": "开启对应探索源后，将在 MoviePilot 探索页面展示对应数据源页面，可根据需要独立开启。"
-                                    },
-                                    {
-                                        "component": "div",
-                                        "props": {"class": "text-body-1 mt-2"},
-                                        "text": f"当前聚合源：{plugin_names}"
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                ]
-            }
-        ]
-        default_data = {f"{name}_enabled": False for name in self.modules}
-        default_data.update({
+    @staticmethod
+    def get_render_mode() -> Tuple[str, Optional[str]]:
+        """声明插件使用 Vue 联邦组件渲染。"""
+        return "vue", "dist/assets"
+
+    def _default_config(self) -> Dict[str, Any]:
+        """构造插件默认配置字典。
+
+        :return: 各模块开关、爱奇艺配置与猫眼开关的默认值。
+        """
+        data = {f"{name}_enabled": False for name in self.modules}
+        data.update({
             "iqiyi_enabled": False,
             "iqiyi_cookie": "",
             "iqiyi_refresh_cron": "",
             "maoyan_enabled": False,
         })
-        return form, default_data
+        return data
+
+    def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        """返回插件默认配置（Vue 模式下表单由远程 Config 组件渲染）。"""
+        return [], self._default_config()
 
     def get_api(self) -> List[Dict[str, Any]]:
         """返回各探索源的 API 端点列表，统一包装为前端要求的 envelope 结构。"""
@@ -304,11 +169,37 @@ class MediaExplore(_PluginBase):
         if self._maoyan_enabled():
             for api in self._maoyan_source.get_api():
                 apis.append(dict(api))
+        # 状态端点，供 Vue 详情页查看各探索源开启状态
+        apis.append({
+            "path": "/status",
+            "endpoint": self.api_status,
+            "methods": ["GET"],
+            "auth": "bear",
+            "summary": "查看各探索源启用状态",
+        })
         return apis
 
+    def api_status(self) -> Dict[str, Any]:
+        """返回各探索源的启用状态摘要，供 Vue 详情页展示。
+
+        :return: 包含各模块、爱奇艺、猫眼启用状态的字典。
+        """
+        sources = {name: bool(self.enabled_modules.get(name)) for name in self.modules}
+        sources.update({
+            "iqiyi": self._iqiyi_enabled(),
+            "maoyan": self._maoyan_enabled(),
+        })
+        return {
+            "success": True,
+            "data": {
+                "enabled": self.get_state(),
+                "sources": sources,
+            },
+        }
+
     def get_page(self) -> List[dict]:
-        """返回插件详情页面（本插件无需详情页）。"""
-        pass
+        """返回插件详情页面（Vue 模式下由远程 Page 组件渲染）。"""
+        return []
 
     def get_service(self) -> List[Dict[str, Any]]:
         """返回插件定时服务列表（爱奇艺 Cookie 定时刷新 + 猫眼缓存预热）。"""

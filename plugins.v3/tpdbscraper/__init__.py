@@ -168,12 +168,8 @@ class TpdbScraper(_PluginBase):
 
     @staticmethod
     def get_render_mode() -> Tuple[str, Optional[str]]:
-        """声明插件渲染模式。
-
-        当前使用 Vuetify JSON 配置（无需前端联邦构建产物）；
-        前端联邦源码保留在插件目录，待有 Node 构建环境后再切换为 vue 模式。
-        """
-        return "vuetify", None
+        """声明插件使用 Vue 联邦组件渲染。"""
+        return "vue", "dist/assets"
 
     @staticmethod
     def get_command() -> List[Dict[str, Any]]:
@@ -208,123 +204,8 @@ class TpdbScraper(_PluginBase):
         ]
 
     def get_form(self) -> Tuple[Optional[List[Dict[str, Any]]], Dict[str, Any]]:
-        """返回插件配置表单与默认配置。"""
-        return [
-            {
-                "component": "VForm",
-                "content": [
-                    {
-                        "component": "VSwitch",
-                        "props": {"model": "enabled", "label": "启用插件"},
-                    },
-                    {
-                        "component": "VTextField",
-                        "props": {
-                            "model": "api_token",
-                            "label": "ThePornDB API Token",
-                            "placeholder": "在 theporndb.net 的 API Tokens 页创建，需 read 权限",
-                            "type": "password",
-                        },
-                    },
-                    {
-                        "component": "VSwitch",
-                        "props": {
-                            "model": "tpdb_use_proxy",
-                            "label": "ThePornDB 主源走代理",
-                        },
-                    },
-                    {
-                        "component": "VTextField",
-                        "props": {
-                            "model": "tpdb_proxy",
-                            "label": "ThePornDB 代理地址",
-                            "placeholder": "http://192.168.1.2:7893",
-                        },
-                    },
-                    {
-                        "component": "VTextarea",
-                        "props": {
-                            "model": "library_dirs",
-                            "label": "媒体库目录（每行一个）",
-                            "rows": 4,
-                            "placeholder": "/media/XXX",
-                        },
-                    },
-                    {
-                        "component": "VSwitch",
-                        "props": {
-                            "model": "overwrite_nfo",
-                            "label": "覆盖已有 movie.nfo",
-                        },
-                    },
-                    {
-                        "component": "VSwitch",
-                        "props": {
-                            "model": "download_poster",
-                            "label": "下载海报 poster.jpg",
-                        },
-                    },
-                    {
-                        "component": "VSwitch",
-                        "props": {
-                            "model": "stashdb_enabled",
-                            "label": "启用 StashDB 补充源",
-                        },
-                    },
-                    {
-                        "component": "VTextField",
-                        "props": {
-                            "model": "stashdb_api_key",
-                            "label": "StashDB API Key",
-                            "placeholder": "在 stashdb.org 个人页复制（可选）",
-                            "type": "password",
-                        },
-                    },
-                    {
-                        "component": "VTextarea",
-                        "props": {
-                            "model": "extra_stashbox_endpoints",
-                            "label": "额外备用 Stash-box 端点（每行一个，格式 端点|APIKey）",
-                            "rows": 3,
-                            "placeholder": "https://fansdb.cc/graphql|你的key\nhttps://另一个实例/graphql|另一个key",
-                        },
-                    },
-                    {
-                        "component": "VSwitch",
-                        "props": {
-                            "model": "stashbox_use_proxy",
-                            "label": "Stash-box 补充源走代理",
-                        },
-                    },
-                    {
-                        "component": "VTextField",
-                        "props": {
-                            "model": "stashbox_proxy",
-                            "label": "Stash-box 代理地址",
-                            "placeholder": "http://192.168.1.2:7893",
-                        },
-                    },
-                    {
-                        "component": "VTextField",
-                        "props": {
-                            "model": "scrape_hour",
-                            "label": "每日刮削时间（小时，0-23）",
-                            "placeholder": "2",
-                            "hint": "每天在这个整点运行一次，2 = 凌晨 2 点。",
-                        },
-                    },
-                    {
-                        "component": "VTextField",
-                        "props": {
-                            "model": "batch_size",
-                            "label": "每轮刮削数量",
-                            "placeholder": "50",
-                            "hint": "每轮最多处理的条目数。",
-                        },
-                    },
-                ],
-            }
-        ], {
+        """返回插件默认配置（Vue 模式下表单由远程 Config 组件渲染）。"""
+        return [], {
             "enabled": False,
             "api_token": "",
             "tpdb_use_proxy": False,
@@ -342,29 +223,8 @@ class TpdbScraper(_PluginBase):
         }
 
     def get_page(self) -> Optional[List[Dict[str, Any]]]:
-        """返回插件详情页面。"""
-        if not self._enabled:
-            return [
-                {
-                    "component": "VAlert",
-                    "props": {
-                        "type": "warning",
-                        "variant": "tonal",
-                        "text": "插件未启用，请先在配置中启用并填写 API Token。",
-                    },
-                }
-            ]
-        return [
-            {
-                "component": "VAlert",
-                "props": {
-                    "type": "info",
-                    "variant": "tonal",
-                    "text": (f"已启用，刮削目录：{', '.join(self._library_dirs) or '未配置'}。"
-                            " 可通过 /tpdb_scrape 命令或页面按钮触发全库刮削。"),
-                },
-            }
-        ]
+        """返回插件详情页面（Vue 模式下由远程 Page 组件渲染）。"""
+        return []
 
     def stop_service(self) -> None:
         """停止插件后台服务，关闭海报下载线程池。"""

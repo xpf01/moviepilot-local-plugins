@@ -88,6 +88,11 @@ class JellyfinNfoFixer(_PluginBase):
         return self._enabled
 
     @staticmethod
+    def get_render_mode() -> Tuple[str, Optional[str]]:
+        """声明插件使用 Vue 联邦组件渲染。"""
+        return "vue", "dist/assets"
+
+    @staticmethod
     def get_command() -> List[Dict[str, Any]]:
         """返回插件远程命令列表。
 
@@ -108,7 +113,7 @@ class JellyfinNfoFixer(_PluginBase):
     def get_api(self) -> List[Dict[str, Any]]:
         """返回插件 API 列表。
 
-        注册 /fix_nfo 端点，供页面按钮触发全库补齐。
+        注册 /fix_nfo 与 /status 端点，供页面触发全库补齐与查看状态。
         """
         return [
             {
@@ -117,93 +122,39 @@ class JellyfinNfoFixer(_PluginBase):
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "全库补齐 movie.nfo",
-            }
-        ]
-    def get_form(self) -> Tuple[Optional[List[Dict[str, Any]]], Dict[str, Any]]:
-        """返回插件配置表单与默认配置。"""
-        return [
+            },
             {
-                "component": "VForm",
-                "content": [
-                    {
-                        "component": "VSwitch",
-                        "props": {
-                            "model": "enabled",
-                            "label": "启用插件"
-                        }
-                    },
-                    {
-                        "component": "VTextarea",
-                        "props": {
-                            "model": "movie_library_dirs",
-                            "label": "电影库目录（每行一个，用于全库补齐）",
-                            "rows": 5,
-                            "placeholder": "/media/电影\n/media/XXX"
-                        }
-                    },
-                    {
-                        "component": "VAlert",
-                        "props": {
-                            "type": "info",
-                            "variant": "tonal",
-                            "text": "启用后监听元数据刮削完成事件，自动生成 movie.nfo。刮削完成后如需修正存量，请重新触发一次媒体库刮削（覆盖模式）。"
-                        }
-                    }
-                ]
-            }
-        ], {
+                "path": "/status",
+                "endpoint": self.api_status,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "查看当前状态",
+            },
+        ]
+
+    def api_status(self) -> Dict[str, Any]:
+        """返回插件运行状态摘要，供 Vue 详情页展示。
+
+        :return: 包含启用状态与电影库目录列表的字典。
+        """
+        return {
+            "success": True,
+            "data": {
+                "enabled": self._enabled,
+                "movie_library_dirs": self._movie_library_dirs,
+            },
+        }
+
+    def get_form(self) -> Tuple[Optional[List[Dict[str, Any]]], Dict[str, Any]]:
+        """返回插件默认配置（Vue 模式下表单由远程 Config 组件渲染）。"""
+        return [], {
             "enabled": False,
             "movie_library_dirs": "/media/电影"
         }
 
     def get_page(self) -> Optional[List[Dict[str, Any]]]:
-        """返回插件详情页面。
-
-        提供「立即全库补齐」按钮，点击调用 /fix_nfo 端点。
-        """
-        if not self._enabled:
-            return [
-                {
-                    "component": "VAlert",
-                    "props": {
-                        "type": "warning",
-                        "variant": "tonal",
-                        "text": "插件未启用，请先在配置中启用插件。"
-                    }
-                }
-            ]
-        return [
-            {
-                "component": "VRow",
-                "content": [
-                    {
-                        "component": "VCol",
-                        "props": {"cols": 12},
-                        "content": [
-                            {
-                                "component": "VBtn",
-                                "props": {
-                                    "color": "primary",
-                                    "variant": "flat",
-                                    "block": True,
-                                    "prepend-icon": "mdi-file-document-check-outline",
-                                    "onclick": (
-                                        "function(e) { "
-                                        "window.MoviePilotAPI.post("
-                                        "'plugin/JellyfinNfoFixer/fix_nfo', {})"
-                                        ".then(function(r) { "
-                                        "alert(r && r.message ? r.message : '已完成') })"
-                                        ".catch(function(err) { "
-                                        "console.error(err); alert('执行失败') }) }"
-                                    ),
-                                },
-                                "text": "立即全库补齐 movie.nfo",
-                            }
-                        ],
-                    }
-                ],
-            }
-        ]
+        """返回插件详情页面（Vue 模式下由远程 Page 组件渲染）。"""
+        return []
     def stop_service(self) -> None:
         """停止插件服务。"""
         return None

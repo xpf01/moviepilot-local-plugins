@@ -90,67 +90,48 @@ class IsoRemuxOrganize(_PluginBase):
         return self._enabled
 
     @staticmethod
+    def get_render_mode() -> Tuple[str, Optional[str]]:
+        """声明插件使用 Vue 联邦组件渲染。"""
+        return "vue", "dist/assets"
+
+    @staticmethod
     def get_command() -> List[Dict[str, Any]]:
         """返回插件远程命令列表。"""
         return []
 
     def get_api(self) -> List[Dict[str, Any]]:
         """返回插件 API 列表。"""
-        return []
-
-    def get_form(self) -> Tuple[Optional[List[Dict[str, Any]]], Dict[str, Any]]:
-        """返回插件配置表单与默认配置。"""
         return [
             {
-                "component": "VForm",
-                "content": [
-                    {
-                        "component": "VSwitch",
-                        "props": {"model": "enabled", "label": "启用插件"},
-                    },
-                    {
-                        "component": "VTextField",
-                        "props": {
-                            "model": "scan_root",
-                            "label": "扫描根目录",
-                            "placeholder": "/media/影视下载",
-                        },
-                    },
-                    {
-                        "component": "VTextField",
-                        "props": {
-                            "model": "interval",
-                            "label": "定时扫描间隔（秒）",
-                            "type": "number",
-                            "min": 300,
-                            "placeholder": "1800",
-                        },
-                    },
-                    {
-                        "component": "VTextField",
-                        "props": {
-                            "model": "timeout",
-                            "label": "转封装超时（秒）",
-                            "type": "number",
-                            "min": 60,
-                            "placeholder": "21600",
-                        },
-                    },
-                    {
-                        "component": "VSwitch",
-                        "props": {"model": "notify", "label": "处理完成发送通知"},
-                    },
-                    {
-                        "component": "VAlert",
-                        "props": {
-                            "type": "info",
-                            "variant": "tonal",
-                            "text": "仅处理 .iso 单文件；挂载后定位最大 m2ts 无损转 MKV，原始 ISO 保留。",
-                        },
-                    },
-                ],
-            }
-        ], {
+                "path": "/status",
+                "endpoint": self.api_status,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "查看当前运行状态",
+            },
+        ]
+
+    def api_status(self) -> Dict[str, Any]:
+        """返回插件运行状态摘要，供 Vue 详情页展示。
+
+        :return: 包含启用状态、扫描目录、间隔、超时与已处理数量的字典。
+        """
+        processed = self.get_data(self._DATA_KEY) or {}
+        return {
+            "success": True,
+            "data": {
+                "enabled": self._enabled,
+                "scan_root": self._scan_root,
+                "interval": self._interval,
+                "timeout": self._ffmpeg_timeout,
+                "notify": self._notify,
+                "processed_count": len(processed),
+            },
+        }
+
+    def get_form(self) -> Tuple[Optional[List[Dict[str, Any]]], Dict[str, Any]]:
+        """返回插件默认配置（Vue 模式下表单由远程 Config 组件渲染）。"""
+        return [], {
             "enabled": False,
             "scan_root": self._DEFAULT_SCAN_ROOT,
             "interval": self._DEFAULT_INTERVAL,
@@ -159,8 +140,8 @@ class IsoRemuxOrganize(_PluginBase):
         }
 
     def get_page(self) -> Optional[List[Dict[str, Any]]]:
-        """返回插件详情页面。"""
-        return None
+        """返回插件详情页面（Vue 模式下由远程 Page 组件渲染）。"""
+        return []
 
     def stop_service(self) -> None:
         """停止插件后台任务。"""

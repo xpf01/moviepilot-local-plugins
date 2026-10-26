@@ -1,0 +1,187 @@
+import { importShared } from './__federation_fn_import-JrT3xvdd.js';
+
+const {resolveComponent:_resolveComponent,createVNode:_createVNode,createElementVNode:_createElementVNode,withCtx:_withCtx,toDisplayString:_toDisplayString,createTextVNode:_createTextVNode,openBlock:_openBlock,createBlock:_createBlock,createCommentVNode:_createCommentVNode,createElementBlock:_createElementBlock} = await importShared('vue');
+
+
+const _hoisted_1 = { class: "pa-4" };
+const _hoisted_2 = { class: "d-flex justify-end mt-4" };
+
+const {onMounted,reactive,ref} = await importShared('vue');
+
+
+
+const _sfc_main = {
+  __name: 'Config',
+  props: {
+  api: { type: Object, default: () => ({}) },
+  pluginId: { type: String, default: 'JellyfinNfoFixer' },
+  initialConfig: { type: Object, default: () => ({}) },
+},
+  emits: ['save', 'close'],
+  setup(__props, { emit: __emit }) {
+
+const props = __props;
+
+const emit = __emit;
+const saving = ref(false);
+const message = reactive({ text: '', type: 'info' });
+
+const defaults = {
+  enabled: false,
+  movie_library_dirs: '/media/电影',
+};
+
+const config = reactive({ ...defaults });
+
+function showMessage(text, type = 'info') {
+  message.text = text;
+  message.type = type;
+  if (text) setTimeout(() => { if (message.text === text) message.text = ''; }, 3500);
+}
+
+async function saveConfig() {
+  if (typeof props.api?.put !== 'function') {
+    showMessage('当前 MoviePilot 未提供配置保存接口', 'error');
+    return
+  }
+  saving.value = true;
+  try {
+    const payload = {
+      enabled: Boolean(config.enabled),
+      movie_library_dirs: String(config.movie_library_dirs || ''),
+    };
+    const response = await props.api.put(`plugin/${props.pluginId || 'JellyfinNfoFixer'}`, payload);
+    const result = response?.data ?? response;
+    if (result?.success === false) throw new Error(result.message || '保存配置失败')
+    emit('save', payload);
+    showMessage('配置已保存', 'success');
+  } catch (error) {
+    showMessage(error?.message || '保存配置失败', 'error');
+  } finally {
+    saving.value = false;
+  }
+}
+
+onMounted(() => {
+  Object.assign(config, defaults, props.initialConfig || {});
+});
+
+return (_ctx, _cache) => {
+  const _component_VIcon = _resolveComponent("VIcon");
+  const _component_VSpacer = _resolveComponent("VSpacer");
+  const _component_VBtn = _resolveComponent("VBtn");
+  const _component_VToolbar = _resolveComponent("VToolbar");
+  const _component_VDivider = _resolveComponent("VDivider");
+  const _component_VAlert = _resolveComponent("VAlert");
+  const _component_VSwitch = _resolveComponent("VSwitch");
+  const _component_VCol = _resolveComponent("VCol");
+  const _component_VTextarea = _resolveComponent("VTextarea");
+  const _component_VRow = _resolveComponent("VRow");
+
+  return (_openBlock(), _createElementBlock("div", _hoisted_1, [
+    _createVNode(_component_VToolbar, {
+      density: "comfortable",
+      color: "transparent",
+      class: "px-0"
+    }, {
+      default: _withCtx(() => [
+        _createVNode(_component_VIcon, {
+          icon: "mdi-file-document-check-outline",
+          color: "primary",
+          class: "me-2"
+        }),
+        _cache[3] || (_cache[3] = _createElementVNode("div", { class: "text-h6" }, "Jellyfin Nfo命名修复配置", -1)),
+        _createVNode(_component_VSpacer),
+        _createVNode(_component_VBtn, {
+          icon: "mdi-content-save",
+          variant: "text",
+          color: "success",
+          loading: saving.value,
+          title: "保存配置",
+          onClick: saveConfig
+        }, null, 8, ["loading"]),
+        _createVNode(_component_VBtn, {
+          icon: "mdi-close",
+          variant: "text",
+          title: "关闭",
+          onClick: _cache[0] || (_cache[0] = $event => (emit('close')))
+        })
+      ]),
+      _: 1
+    }),
+    _createVNode(_component_VDivider, { class: "mb-4" }),
+    (message.text)
+      ? (_openBlock(), _createBlock(_component_VAlert, {
+          key: 0,
+          type: message.type,
+          variant: "tonal",
+          density: "compact",
+          class: "mb-4"
+        }, {
+          default: _withCtx(() => [
+            _createTextVNode(_toDisplayString(message.text), 1)
+          ]),
+          _: 1
+        }, 8, ["type"]))
+      : _createCommentVNode("", true),
+    _createVNode(_component_VAlert, {
+      type: "info",
+      variant: "tonal",
+      density: "compact",
+      class: "mb-4"
+    }, {
+      default: _withCtx(() => [...(_cache[4] || (_cache[4] = [
+        _createTextVNode(" 启用后监听元数据刮削完成事件，自动生成 movie.nfo；如需修正存量，请使用详情页「立即全库补齐」。 ", -1)
+      ]))]),
+      _: 1
+    }),
+    _createVNode(_component_VRow, { dense: "" }, {
+      default: _withCtx(() => [
+        _createVNode(_component_VCol, { cols: "12" }, {
+          default: _withCtx(() => [
+            _createVNode(_component_VSwitch, {
+              modelValue: config.enabled,
+              "onUpdate:modelValue": _cache[1] || (_cache[1] = $event => ((config.enabled) = $event)),
+              label: "启用插件",
+              color: "success",
+              "hide-details": ""
+            }, null, 8, ["modelValue"])
+          ]),
+          _: 1
+        }),
+        _createVNode(_component_VCol, { cols: "12" }, {
+          default: _withCtx(() => [
+            _createVNode(_component_VTextarea, {
+              modelValue: config.movie_library_dirs,
+              "onUpdate:modelValue": _cache[2] || (_cache[2] = $event => ((config.movie_library_dirs) = $event)),
+              label: "电影库目录（每行一个，用于全库补齐）",
+              rows: "5",
+              variant: "outlined",
+              hint: "例如 /media/电影",
+              "persistent-hint": ""
+            }, null, 8, ["modelValue"])
+          ]),
+          _: 1
+        })
+      ]),
+      _: 1
+    }),
+    _createElementVNode("div", _hoisted_2, [
+      _createVNode(_component_VBtn, {
+        color: "primary",
+        loading: saving.value,
+        onClick: saveConfig
+      }, {
+        default: _withCtx(() => [...(_cache[5] || (_cache[5] = [
+          _createTextVNode("保存配置", -1)
+        ]))]),
+        _: 1
+      }, 8, ["loading"])
+    ])
+  ]))
+}
+}
+
+};
+
+export { _sfc_main as default };
