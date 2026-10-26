@@ -189,62 +189,55 @@ class SeriesOrganizer(_PluginBase):
         return self._enabled
 
     @staticmethod
+    def get_render_mode() -> Tuple[str, Optional[str]]:
+        """声明插件使用 Vue 联邦组件渲染。"""
+        return "vue", "dist/assets"
+
+    @staticmethod
     def get_command() -> List[Dict[str, Any]]:
         """返回插件远程命令列表。"""
         return []
 
     def get_api(self) -> List[Dict[str, Any]]:
         """返回插件 API 列表。"""
-        return []
-
-    def get_form(self) -> Tuple[Optional[List[Dict[str, Any]]], Dict[str, Any]]:
-        """返回插件配置表单与默认配置。"""
         return [
             {
-                "component": "VForm",
-                "content": [
-                    {
-                        "component": "VSwitch",
-                        "props": {
-                            "model": "enabled",
-                            "label": "启用插件"
-                        }
-                    },
-                    {
-                        "component": "VSwitch",
-                        "props": {
-                            "model": "notify",
-                            "label": "未匹配的疑似续集发送提示"
-                        }
-                    },
-                    {
-                        "component": "VSwitch",
-                        "props": {
-                            "model": "dry_run",
-                            "label": "仅演练不实际移动（调试用）"
-                        }
-                    },
-                    {
-                        "component": "VTextarea",
-                        "props": {
-                            "model": "series_map",
-                            "label": "系列映射表（每行一条：前缀:系列名）",
-                            "rows": 16,
-                            "placeholder": "速度与激情:速度与激情\n变形金刚:变形金刚\n碟中谍:碟中谍"
-                        }
-                    }
-                ]
-            }
-        ], {
+                "path": "/status",
+                "endpoint": self.api_status,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "查看当前归组状态与系列映射表",
+            },
+        ]
+
+    def api_status(self) -> Dict[str, Any]:
+        """返回插件运行状态摘要，供 Vue 详情页展示。
+
+        :return: 包含启用状态、通知开关、演练开关、系列数量与当前生效映射表的字典。
+        """
+        return {
+            "success": True,
+            "data": {
+                "enabled": self._enabled,
+                "notify": self._notify,
+                "dry_run": self._dry_run,
+                "series_count": len(self._series_map),
+                "series_map": dict(self._series_map),
+            },
+        }
+
+    def get_form(self) -> Tuple[Optional[List[Dict[str, Any]]], Dict[str, Any]]:
+        """返回插件默认配置（Vue 模式下表单由远程 Config 组件渲染）。"""
+        return [], {
             "enabled": False,
             "notify": True,
             "dry_run": False,
-            "series_map": "\n".join(f"{k}:{v}" for k, v in DEFAULT_SERIES_MAP.items())
+            "series_map": "\n".join(f"{k}:{v}" for k, v in DEFAULT_SERIES_MAP.items()),
         }
 
     def get_page(self) -> Optional[List[Dict[str, Any]]]:
-        """返回插件详情页面。"""
-        return None
+        """返回插件详情页面（Vue 模式下由远程 Page 组件渲染）。"""
+        return []
 
     def stop_service(self) -> None:
         """停止插件服务。"""
