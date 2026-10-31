@@ -6,3 +6,5 @@ node_modules/
 dist/
 !plugins.v3/*/dist/
 !plugins.v3/*/dist/**
+!plugins.v3/*/frontend/dist/
+!plugins.v3/*/frontend/dist/**

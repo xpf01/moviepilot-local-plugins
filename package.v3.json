@@ -76,5 +76,31 @@
     "history": {
       "v1.0.0": "初始版本：聚合国内视频站探索源，统一 envelope 包装与 media_source 适配"
     }
+  },
+  "DeepSeekBalanceMonitor": {
+    "name": "DeepSeek余额监控",
+    "description": "定时查询 DeepSeek 官方 /user/balance 接口，展示充值/赠金/总余额明细，低于阈值或欠费时通知告警（去重，充值恢复后再触发），并提供充值入口与用量看板跳转，联邦 UI。",
+    "labels": "系统工具,监控,DeepSeek",
+    "version": "1.0.0",
+    "icon": "deepseekbalancemonitor.png",
+    "author": "local",
+    "level": 1,
+    "system_version": ">=3.0.0",
+    "history": {
+      "v1.0.0": "初始版本：定时查询 DeepSeek 余额明细，阈值告警去重，充值入口与用量看板跳转，联邦 UI"
+    }
+  },
+  "SubscribeHub": {
+    "name": "订阅聚合中心",
+    "description": "聚合豆瓣榜单/猫眼/蜜柑/Netflix/热门媒体/豆瓣想看等多来源，组合过滤后自动订阅，统一去重、日志与调度，联邦 UI。",
+    "labels": "订阅",
+    "version": "1.0.0",
+    "icon": "subscribehub.png",
+    "author": "local",
+    "level": 1,
+    "system_version": ">=3.2.0",
+    "history": {
+      "v1.0.0": "初始版本：聚合榜单/想看/热门三线订阅来源，扩展自自动订阅助手架构，联邦 UI"
+    }
   }
 }

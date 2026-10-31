@@ -19,6 +19,8 @@ from app.application.downloader import DownloaderHelper
 from app.modules.transmission.transmission import Transmission
 from app.plugins import _PluginBase
 from app.schemas import NotificationType
+from app.schemas.types import EventType
+from app.sdk.events import eventmanager
 from app.sdk.logging import logger
 
 
@@ -52,6 +54,13 @@ class QnapStorageMonitor(_PluginBase):
 
     # 下载暂停状态标记，保存到插件数据，重启后可续
     _download_paused = False
+
+    # 磁盘容量查询缓存（避免 DownloadAdded 事件高频触发时反复 SSH）：(查询时间戳, 最小剩余GB, 剩余最少池名)
+    _disk_cache: Optional[Tuple[float, float, str]] = None
+    # 磁盘查询缓存有效期（秒）：窗口内的重复查询直接复用缓存结果
+    _DISK_CACHE_TTL = 60.0
+    # 事件处理器加锁，避免并发下载事件同时操作下载器/磁盘状态
+    _react_lock = threading.Lock()
 
     def init_plugin(self, config: dict = None) -> None:
         """根据插件配置初始化运行状态。
@@ -170,6 +179,76 @@ class QnapStorageMonitor(_PluginBase):
         """停止插件后台服务并释放资源。"""
         return None
 
+    @eventmanager.register(EventType.DownloadAdded)
+    def remote_download_added(self, event):
+        """下载添加事件处理器：下载一旦被添加，立即检查磁盘并在不足时暂停该任务。
+
+        这是对「定时巡检」的即时补充：定时巡检最长 12 小时才响应一次，而下载添加事件
+        能在下载刚建立（进度约 0%、尚未占用新空间）时就触发检查，把磁盘风险窗口压缩到秒级。
+        磁盘查询结果带 60 秒缓存，避免批量下载并发触发时反复 SSH 查询 QNAP。
+        """
+        if not self._enabled or not self._auto_pause_download:
+            return
+        if getattr(event, "event_data", None):
+            data = event.event_data
+        else:
+            data = event
+        download_hash = getattr(data, "hash", None) or (data.get("hash") if isinstance(data, dict) else None)
+        if not download_hash:
+            return
+        # 低频磁盘判断：带缓存，避免每个下载都 SSH 一次
+        min_info = self._query_min_avail_cached()
+        if min_info is None:
+            return
+        pool_name, avail_gb = min_info
+        if avail_gb >= self._stop_threshold_gb:
+            return
+        # 低于阈值：立即暂停这个刚添加的下载任务
+        with self._react_lock:
+            self._pause_single(download_hash, pool_name, avail_gb)
+
+    def _query_min_avail_cached(self) -> Optional[Tuple[str, float]]:
+        """查询剩余容量最小的存储池，结果带缓存（窗口内复用，避免频繁 SSH）。
+
+        :return: (池名, 剩余GB)；查询失败返回 None。
+        """
+        import time
+        now = time.time()
+        if self._disk_cache and (now - self._disk_cache[0]) < self._DISK_CACHE_TTL:
+            return self._disk_cache[1], self._disk_cache[2]
+        pools = self._query_storage_pools()
+        if not pools:
+            return None
+        min_pool = min(pools, key=lambda x: x[3])
+        name, _total, _used, avail = min_pool
+        self._disk_cache = (now, float(avail), str(name))
+        return str(name), float(avail)
+
+    def _pause_single(self, download_hash: str, pool_name: str, avail_gb: float) -> None:
+        """暂停单个刚添加的下载任务，并更新暂停状态标记。
+
+        :param download_hash: 下载任务 hash。
+        :param pool_name: 剩余容量最少的存储池名。
+        :param avail_gb: 该池剩余容量（GB）。
+        """
+        client = self._get_transmission()
+        if not client:
+            logger.warning("QNAP存储池监控：下载添加事件触发暂停，但无法连接 Transmission")
+            return
+        ok = client.stop_torrents(ids=[download_hash])
+        if ok:
+            self._download_paused = True
+            self.save_data("download_paused", True)
+            logger.info(
+                "QNAP存储池监控：下载添加事件触发，存储池 %s 剩余 %.0fG 低于阈值 %.0fG，已暂停新下载任务 %s",
+                pool_name, avail_gb, self._stop_threshold_gb, download_hash)
+            self._notify(
+                "QNAP 存储池告警：已拦截新下载",
+                f"存储池 {pool_name} 剩余仅 {avail_gb:.0f}G，低于停止阈值 "
+                f"{self._stop_threshold_gb:.0f}G，已暂停刚添加的下载任务。")
+        else:
+            logger.warning("QNAP存储池监控：暂停新下载任务失败 %s", download_hash)
+
     def _check_and_react(self) -> None:
         """执行一次容量检查，并按阈值决定暂停或恢复下载。"""
         if not self._host or not self._username:
@@ -256,15 +335,24 @@ class QnapStorageMonitor(_PluginBase):
             port = cfg.get("port")
             username = cfg.get("username")
             password = cfg.get("password")
-            if not host or not port:
-                logger.warning("QNAP存储池监控：Transmission 配置缺少 host/port")
+            if not host:
+                logger.warning("QNAP存储池监控：Transmission 配置缺少 host")
                 continue
-            client = Transmission(
-                host=str(host),
-                port=int(port),
-                username=username or None,
-                password=password or None,
-            )
+            # MoviePilot 部分版本的下载器配置把 host 存成完整 URL（如 http://ip:port），
+            # 此时没有独立的 port 字段；内置 Transmission 客户端只传入 host 即可自行解析。
+            if port:
+                client = Transmission(
+                    host=str(host),
+                    port=int(port),
+                    username=username or None,
+                    password=password or None,
+                )
+            else:
+                client = Transmission(
+                    host=str(host),
+                    username=username or None,
+                    password=password or None,
+                )
             if client.trc:
                 return client
         logger.warning("QNAP存储池监控：未找到可用的 Transmission 下载器")

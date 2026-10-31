@@ -1,0 +1,361 @@
+"""统一订阅落地管线。
+
+对单条 RankMediaItem 严格按序执行：预去重 -> 已处理短路 -> pre 过滤 -> 识别 ->
+post 过滤 -> 媒体库查重 -> 订阅查重 -> 加订阅 -> 记历史。每步命中即短路并落历史。
+
+预去重（``SubscribedIndex``）是叠加在 ``subscribechain.exists()`` 之上的**快速路径**：
+仅当强标识命中已订阅/本轮已处理集合时才跳过识别；未命中仍照常识别 + exists() 兜底。
+最坏情况只是「多识别了一条」，绝不会错订/重订/漏订。
+
+整条处理包在 try/except，异常返回 ERROR 并记历史（非正向终态、可被后续重试）。
+"""
+from __future__ import annotations
+
+from copy import deepcopy
+from dataclasses import replace
+from datetime import datetime
+from typing import TYPE_CHECKING, Optional
+
+from app.schemas.types import MediaSource, MediaType, SystemConfigKey
+from app.sdk.logging import logger
+from app.sdk.media import MetaInfo, resolve_media_identity
+
+from .dedup import SubscribedIndex
+from .models import HistoryRecord, RankMediaItem, SubscribeOutcome, SubscribeStatus, media_identity
+
+if TYPE_CHECKING:
+    from app.sdk.media import MediaInfo
+
+    from .config import GlobalConfig
+    from .filters import FilterChain
+    from .history import HistoryStore
+    from .provider import ProviderContext, RankProvider
+
+# 历史时间格式。
+TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+class SubscribeExecutor:
+    """把标准化条目统一落地为订阅，并沉淀历史。"""
+
+    def __init__(self, context: "ProviderContext", global_config: "GlobalConfig",
+                 subscribed_index: Optional[SubscribedIndex] = None):
+        self.ctx = context
+        self.gcfg = global_config
+        # 已订阅强标识索引（跨渠道 + 与已订阅去重的快速路径）。缺省空索引 → 无快速路径、向后兼容。
+        self.index = subscribed_index if subscribed_index is not None else SubscribedIndex()
+
+    def process(self, item: RankMediaItem, provider: "RankProvider",
+                filter_chain: "FilterChain", history: "HistoryStore",
+                filters_config: dict, options: Optional[dict] = None) -> SubscribeOutcome:
+        """处理单条条目，返回落地结果。异常统一转为 ERROR 结果并记历史。
+
+        ``options`` 为该来源的原始选项配置（供「搜索下载优先」等来源级能力开关读取），
+        缺省 None（兼容旧调用点，等价于未开启任何来源级能力）。
+        """
+        try:
+            return self._process(item, provider, filter_chain, history, filters_config, options)
+        except Exception as exc:  # noqa: BLE001 - 单条兜底，不应影响整源
+            reason = str(exc)
+            self._record(history, item.identity(), provider, item, None, None,
+                         SubscribeStatus.ERROR, reason)
+            return SubscribeOutcome(SubscribeStatus.ERROR, item, reason=reason)
+
+    def _process(self, item, provider, filter_chain, history, filters_config,
+                 options: Optional[dict] = None) -> SubscribeOutcome:
+        # 在任何快速去重之前解析明确季号；replace 避免修改 provider 的缓存对象。
+        meta = MetaInfo(item.title)
+        if item.season is not None:
+            meta.begin_season = item.season
+        item = replace(item, season=meta.begin_season,
+                       type_hint=(item.type_hint or (MediaType.TV if meta.begin_season is not None else None)))
+        identity = item.identity()
+        candidate_key = item.candidate_key()
+        candidate_is_exact = item.type_hint == MediaType.MOVIE or item.season is not None
+
+        # 1. 预去重快速路径：强标识命中「已订阅 / 本轮已处理」→ 跳过识别。
+        if self.index.contains(item):
+            canonical = self.index.identity_for(item) or identity
+            # 同一命中方式只记一条（身份键合并），避免记录膨胀。
+            if not history.is_handled(canonical):
+                self._record(history, canonical, provider, item, None, None,
+                             SubscribeStatus.SUBSCRIPTION_EXISTS, "已订阅（预去重，跳过识别）")
+                history.mark_handled(canonical)
+            if candidate_is_exact:
+                history.mark_handled(candidate_key, canonical, provider.provider_id)
+            return SubscribeOutcome(SubscribeStatus.SUBSCRIPTION_EXISTS, item,
+                                    reason="已订阅（预去重，跳过识别）")
+
+        # 2. 已处理短路（本插件历史中的正向终态）：不识别、不记新历史。
+        exact_identity = candidate_is_exact or (item.type_hint is None and bool(item.douban_id or item.bangumi_id))
+        if ((candidate_is_exact and history.is_handled(candidate_key))
+                or (exact_identity and history.is_handled(identity))):
+            return SubscribeOutcome(SubscribeStatus.ALREADY_HANDLED, item)
+
+        # 3. pre 过滤（识别前）。被过滤者记录但不标记已处理 → 可被其他渠道/下一轮重试。
+        verdict = filter_chain.run("pre", item, None, filters_config)
+        if not verdict.accepted:
+            self._record(history, identity, provider, item, None, None,
+                         SubscribeStatus.FILTERED, verdict.reason)
+            return SubscribeOutcome(SubscribeStatus.FILTERED, item, reason=verdict.reason)
+
+        # 4. 识别。
+        if item.year:
+            meta.year = item.year
+        if item.type_hint:
+            meta.type = item.type_hint
+        if item.season is not None:
+            meta.begin_season = item.season
+        if item.episode_group:
+            meta.episode_group = item.episode_group
+        mediainfo = self._recognize(item, meta)
+        if mediainfo is None:
+            self._record(history, identity, provider, item, None, None,
+                         SubscribeStatus.UNRECOGNIZED, "未识别到媒体信息")
+            return SubscribeOutcome(SubscribeStatus.UNRECOGNIZED, item, reason="未识别到媒体信息")
+
+        # 识别成功后，用识别结果计算规范身份与订阅季（供记录合并与索引登记）。
+        is_tv = mediainfo.type == MediaType.TV
+        # 宿主返回的媒体对象可能来自共享缓存，目标季/剧集组只能写入本次副本。
+        mediainfo = deepcopy(mediainfo)
+        sub_season = item.season if item.season is not None else mediainfo.season
+        if is_tv and sub_season is None:
+            seasons = [number for number in (mediainfo.seasons or {}) if number > 0]
+            if len(seasons) == 1:
+                sub_season = seasons[0]
+            else:
+                reason = "未确定订阅季号，请手动确认目标季"
+                self._record(history, identity, provider, item, mediainfo, None,
+                             SubscribeStatus.UNRECOGNIZED, reason)
+                return SubscribeOutcome(SubscribeStatus.UNRECOGNIZED, item, mediainfo=mediainfo, reason=reason)
+        if is_tv:
+            meta.begin_season = sub_season
+            mediainfo.season = sub_season
+        episode_group = getattr(mediainfo, "episode_group", None) or item.episode_group
+        if episode_group:
+            meta.episode_group = episode_group
+            mediainfo.episode_group = episode_group
+        rid = self._identity(item, mediainfo, sub_season if is_tv else None)
+        logger.debug(
+            f"[{provider.provider_id}] 原始 名称={item.title!r} 年份={item.year or '-'} "
+            f"source={item.source_identity()[0] or '-'} id={item.source_identity()[1] or '-'} "
+            f"季={item.season if item.season is not None else '-'}"
+            f" → 订阅 名称={mediainfo.title!r} 年份={mediainfo.year or '-'} "
+            f"source={self._resolve_identity(mediainfo)[0] or '-'} "
+            f"id={self._resolve_identity(mediainfo)[1] or '-'} "
+            f"季={sub_season if is_tv else '-'}"
+        )
+
+        # 原始榜单身份可能与宿主规范身份不同，识别后仍须查持久成功状态。
+        if history.is_handled(rid):
+            if candidate_is_exact:
+                history.mark_handled(candidate_key, rid, provider.provider_id)
+            return SubscribeOutcome(SubscribeStatus.ALREADY_HANDLED, item, mediainfo=mediainfo)
+
+        # 5. post 过滤（识别后）。同样记录但不标记已处理。
+        verdict = filter_chain.run("post", item, mediainfo, filters_config)
+        if not verdict.accepted:
+            self._record(history, rid, provider, item, mediainfo, sub_season if is_tv else None,
+                         SubscribeStatus.FILTERED, verdict.reason)
+            return SubscribeOutcome(SubscribeStatus.FILTERED, item, mediainfo=mediainfo, reason=verdict.reason)
+
+        # 6. 媒体库查重：未允许已有媒体时，完整存在的目标季才短路。
+        exist_flag, no_exists = self.ctx.downloadchain.get_no_exists_info(meta=meta, mediainfo=mediainfo)
+        if exist_flag and not self.gcfg.exist_ok:
+            self._record(history, rid, provider, item, mediainfo, sub_season if is_tv else None,
+                         SubscribeStatus.MEDIA_EXISTS, "媒体库已存在")
+            self._mark_done(history, rid, mediainfo, sub_season if is_tv else None,
+                            episode_group)
+            return SubscribeOutcome(SubscribeStatus.MEDIA_EXISTS, item, mediainfo=mediainfo, reason="媒体库已存在")
+
+        # 6.5 搜索下载优先（仅声明支持且开启的来源）：媒体库缺失时先搜资源直接下载，
+        # 下载成功则记「已下载」终态，失败/无资源继续走订阅查重 + 加订阅。
+        if (provider.supports_search_download
+                and options and bool(options.get("search_download"))
+                and not exist_flag):
+            downloaded = self._try_search_download(
+                provider, item, mediainfo, meta, no_exists, is_tv, sub_season)
+            if downloaded:
+                self._record(history, rid, provider, item, mediainfo, sub_season if is_tv else None,
+                             SubscribeStatus.DOWNLOADED, "搜索下载命中，已提交下载")
+                self._mark_done(history, rid, mediainfo, sub_season if is_tv else None,
+                                episode_group)
+                return SubscribeOutcome(SubscribeStatus.DOWNLOADED, item, mediainfo=mediainfo,
+                                        reason="搜索下载命中，已提交下载")
+
+        # 7. 订阅查重（保留：预去重只是快速路径，此处仍是最终安全网）。
+        if self.ctx.subscribechain.exists(mediainfo=mediainfo, meta=meta):
+            self._record(history, rid, provider, item, mediainfo, sub_season if is_tv else None,
+                         SubscribeStatus.SUBSCRIPTION_EXISTS, "订阅已存在")
+            self._mark_done(history, rid, mediainfo, sub_season if is_tv else None,
+                            episode_group)
+            return SubscribeOutcome(SubscribeStatus.SUBSCRIPTION_EXISTS, item, mediainfo=mediainfo, reason="订阅已存在")
+
+        # 8. 加订阅。宿主按 (media_source, media_id) 定位媒体，身份取自识别结果而非榜单条目：
+        # 榜单给的可能是豆瓣 ID，识别后宿主已换算到它自己的主身份，照抄条目 ID 会订到错的条目上。
+        media_source, media_id = self._resolve_identity(mediainfo)
+        if not media_source or not media_id:
+            reason = "识别结果缺少媒体身份，无法订阅"
+            self._record(history, rid, provider, item, mediainfo, sub_season,
+                         SubscribeStatus.ERROR, reason)
+            return SubscribeOutcome(SubscribeStatus.ERROR, item, mediainfo=mediainfo, reason=reason)
+        sid, err = self.ctx.subscribechain.add(
+            title=mediainfo.title,
+            year=mediainfo.year,
+            mtype=mediainfo.type,
+            media_source=media_source,
+            media_id=media_id,
+            episode_group=episode_group,
+            season=sub_season if is_tv else None,
+            music_type=getattr(mediainfo, "music_type", None),
+            exist_ok=self.gcfg.exist_ok,
+            username=self.gcfg.username,
+        )
+        if sid:
+            self._record(history, rid, provider, item, mediainfo, sub_season,
+                         SubscribeStatus.SUBSCRIBED, None, subscribe_id=sid)
+            self._mark_done(history, rid, mediainfo, sub_season if is_tv else None,
+                            episode_group)
+            return SubscribeOutcome(SubscribeStatus.SUBSCRIBED, item, mediainfo=mediainfo,
+                                    subscribe_id=sid, message=err)
+        self._record(history, rid, provider, item, mediainfo, sub_season, SubscribeStatus.ERROR, err)
+        return SubscribeOutcome(SubscribeStatus.ERROR, item, mediainfo=mediainfo, reason=err)
+
+    def _mark_done(self, history, identity, mediainfo, season, episode_group=None) -> None:
+        """正向终态收尾：标记已处理并登记进已订阅索引，供本轮后续渠道跳过。"""
+        history.mark_handled(identity)
+        media_source, media_id = self._resolve_identity(mediainfo)
+        self.index.add_media(
+            media_source=media_source,
+            media_id=media_id,
+            tmdbid=mediainfo.tmdb_id,
+            doubanid=mediainfo.douban_id,
+            bangumiid=getattr(mediainfo, "bangumi_id", None),
+            episode_group=episode_group or getattr(mediainfo, "episode_group", None),
+            mtype=mediainfo.type,
+            season=season,
+            title=mediainfo.title,
+            year=mediainfo.year,
+        )
+
+    @staticmethod
+    def _identity(item: RankMediaItem, mediainfo: Optional["MediaInfo"], season) -> str:
+        """规范媒体身份键：识别成功用识别结果，否则回退条目自带标识。"""
+        if mediainfo is not None:
+            is_tv = mediainfo.type == MediaType.TV if mediainfo.type else False
+            media_source, media_id = SubscribeExecutor._resolve_identity(mediainfo)
+            return media_identity(
+                tmdb_id=mediainfo.tmdb_id, douban_id=mediainfo.douban_id,
+                bangumi_id=getattr(mediainfo, "bangumi_id", None),
+                media_source=media_source, media_id=media_id,
+                is_tv=is_tv, season=season, title=mediainfo.title, year=mediainfo.year,
+                episode_group=getattr(mediainfo, "episode_group", None) or item.episode_group)
+        return item.identity()
+
+    def _try_search_download(self, provider, item, mediainfo, meta, no_exists,
+                             is_tv: bool, sub_season) -> bool:
+        """搜索下载优先：搜资源直接下载，全部落定则返回 True（无需加订阅）。
+
+        依赖 ``ctx.searchchain``（资源搜索）与 ``ctx.systemconfig``（取订阅站点与过滤规则组）。
+        二者缺一即视为不支持，返回 False 退回统一加订阅管线。
+
+        电影：搜到资源后 ``download_single`` 返回非空下载 ID 即成功。
+        电视剧：``batch_download`` 后无剩余缺失（no_exists 为空）即成功；
+        仍有缺失则返回 False，交由后续加订阅让订阅系统按缺失剧集补全。
+        """
+        if self.ctx.searchchain is None or self.ctx.systemconfig is None:
+            return False
+        try:
+            sites = self.ctx.systemconfig.get(SystemConfigKey.RssSites)
+            rule_groups = self.ctx.systemconfig.get(SystemConfigKey.SubscribeFilterRuleGroups)
+            filter_results = self.ctx.searchchain.process(
+                mediainfo=mediainfo,
+                no_exists=no_exists,
+                sites=sites,
+                rule_groups=rule_groups,
+            )
+        except Exception as exc:  # noqa: BLE001 - 搜索异常退回加订阅，不影响主流程
+            self.ctx.logger.warning(f"{provider.provider_name} 搜索资源失败，回退加订阅: {exc}")
+            return False
+        if not filter_results:
+            return False
+        username = self.gcfg.username
+        try:
+            if not is_tv:
+                download_id = self.ctx.downloadchain.download_single(
+                    context=filter_results[0], username=username)
+                return bool(download_id)
+            # 电视剧：批量下载，剩余的缺失剧集交由订阅系统补全。
+            _, lefts = self.ctx.downloadchain.batch_download(
+                contexts=filter_results, no_exists=no_exists, username=username)
+            return not lefts
+        except Exception as exc:  # noqa: BLE001 - 下载异常退回加订阅
+            self.ctx.logger.warning(f"{provider.provider_name} 下载提交失败，回退加订阅: {exc}")
+            return False
+
+    def _recognize(self, item: RankMediaItem, meta) -> Optional["MediaInfo"]:
+        """按条目通用身份请求宿主识别，缺身份时退化为标题识别。"""
+        media_source, media_id = item.source_identity()
+        if media_source and media_id:
+            return self.ctx.chain.recognize_media(
+                meta=meta, media_source=media_source, media_id=media_id,
+                mtype=item.type_hint)
+        return self.ctx.chain.recognize_media(meta=meta)
+
+    @staticmethod
+    def _resolve_identity(media) -> tuple:
+        """解析媒体对象的 v3 主身份，兼容旧对象仅有辅助 ID 的情况。"""
+        if media is None:
+            return None, None
+        source, media_id = resolve_media_identity(media)
+        if source and media_id:
+            return source, media_id
+        # v3 MediaInfo 正常总有主身份；以下仅为旧缓存/测试对象提供兼容回退。
+        for source, field in (
+            (MediaSource.TMDB, "tmdb_id"),
+            (MediaSource.Douban, "douban_id"),
+            (MediaSource.Bangumi, "bangumi_id"),
+        ):
+            value = getattr(media, field, None)
+            if value is not None and str(value).strip() and str(value).strip() != "0":
+                return source, str(value).strip()
+        return None, None
+
+    def _record(self, history, unique, provider, item, mediainfo, season,
+                status: SubscribeStatus, reason, subscribe_id=None) -> None:
+        """构造并写入一条历史记录（unique 为媒体身份键，跨渠道合并展示）。"""
+        if season is None:
+            season = item.season
+        media_source, media_id = self._resolve_identity(mediainfo)
+        if not media_source or not media_id:
+            media_source, media_id = item.source_identity()
+        episode_group = (
+            getattr(mediainfo, "episode_group", None) if mediainfo is not None
+            else item.episode_group
+        ) or item.episode_group
+        record = HistoryRecord(
+            unique=unique,
+            candidate_key=(item.candidate_key() if item.season is not None or
+                           (mediainfo and mediainfo.type == MediaType.MOVIE) else None),
+            source_item=item.to_dict(),
+            provider=provider.provider_id,
+            title=mediainfo.title if mediainfo else item.title,
+            year=mediainfo.year if mediainfo else item.year,
+            # 类型标注：优先用识别结果，未识别则回退来源自带的 type_hint（榜单已知电影/剧集），
+            # 确保每条历史都带类型、可按电影/剧集筛选。
+            type=((mediainfo.type.value if mediainfo and mediainfo.type else None)
+                  or (item.type_hint.value if item and item.type_hint else "")),
+            tmdbid=mediainfo.tmdb_id if mediainfo else item.tmdb_id,
+            doubanid=mediainfo.douban_id if mediainfo else item.douban_id,
+            # 增存 bangumi id：供「重新识别」无损重建 mikan/番剧候选（识别链按 bangumiid 命中）。
+            bangumiid=(getattr(mediainfo, "bangumi_id", None) if mediainfo else item.bangumi_id),
+            media_source=media_source,
+            media_id=media_id,
+            episode_group=episode_group,
+            poster=(mediainfo.get_poster_image() if mediainfo else item.poster),
+            season=season,
+            status=status.value,
+            reason=reason,
+            time=datetime.now().strftime(TIME_FORMAT),
+        )
+        history.record(record)
