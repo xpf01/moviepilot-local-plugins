@@ -16,8 +16,6 @@ from apscheduler.triggers.cron import CronTrigger
 from app.chain.base import ChainBase
 from app.db.oper.subscribe import SubscribeOper
 from app.plugins import _PluginBase
-from app.schemas.context import MediaInfo
-from app.schemas.types import MediaType
 from app.sdk.logging import logger
 
 from .core.scanner import ScanReport, SubscriptionAutoStopScanner

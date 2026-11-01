@@ -7,8 +7,8 @@ from typing import Any, Dict, List, Optional
 
 from app.chain.base import ChainBase
 from app.db.oper.subscribe import SubscribeOper
-from app.schemas.context import MediaInfo
-from app.schemas.types import MediaType
+from app.domain.context import MediaInfo
+from app.schemas.types import MediaSource, MediaType
 from app.sdk.logging import logger
 
 
@@ -123,13 +123,21 @@ class SubscriptionAutoStopScanner:
         mtype = getattr(sub, "type", None)
 
         # 豆瓣等非 TMDB 源直接无法用 media_exists 定位，跳过避免误判。
-        if not media_id or media_source != "themoviedb":
+        if not media_id or media_source != MediaSource.TMDB.value:
+            return False
+
+        # 将订阅里的中文字符串 type 映射为 MediaType 枚举（media_exists 内部按枚举比较）。
+        try:
+            media_type = MediaType(mtype)
+        except (ValueError, TypeError):
+            media_type = None
+        if media_type is None:
             return False
 
         media_info = MediaInfo(
-            media_source=media_source,
+            media_source=MediaSource(media_source),
             media_id=str(media_id),
-            type=mtype,
+            type=media_type,
             season=getattr(sub, "season", None),
             year=getattr(sub, "year", None),
         )
@@ -139,11 +147,15 @@ class SubscriptionAutoStopScanner:
             return False
 
         # 电影：存在即命中。
-        if mtype != MediaType.TV.value:
+        if media_type == MediaType.MOVIE:
             return True
 
         # 电视剧：目标季整季全齐才命中。
-        return self._tv_season_complete(sub, exists.seasons or {})
+        if media_type == MediaType.TV:
+            return self._tv_season_complete(sub, exists.seasons or {})
+
+        # 其他类型（音乐等）不处理。
+        return False
 
     def _tv_season_complete(self, sub, exist_seasons: Dict[int, List[int]]) -> bool:
         """判断电视剧目标季是否整季全齐。
