@@ -102,5 +102,18 @@
     "history": {
       "v1.0.0": "初始版本：聚合榜单/想看/热门三线订阅来源，扩展自自动订阅助手架构，联邦 UI"
     }
+  },
+  "SubscribeAutoStop": {
+    "name": "订阅入库自停",
+    "description": "定时扫描订阅中的影片是否已完整入库，命中后自动暂停或删除对应订阅。电影整部、电视剧整季全齐才停止，避免重复下载，联邦 UI。",
+    "labels": "订阅",
+    "version": "1.0.0",
+    "icon": "subscribeautostop.png",
+    "author": "local",
+    "level": 1,
+    "system_version": ">=3.2.0",
+    "history": {
+      "v1.0.0": "初始版本：定时+手动扫描订阅入库状态，电影整部/电视剧整季全齐判定，暂停或删除可选，联邦 UI"
+    }
   }
 }
