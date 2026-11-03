@@ -203,9 +203,9 @@ class QnapStorageMonitor(_PluginBase):
         pool_name, avail_gb = min_info
         if avail_gb >= self._stop_threshold_gb:
             return
-        # 低于阈值：立即暂停这个刚添加的下载任务
+        # 低于阈值：立即删除这个刚添加的下载任务，不留暂停残留
         with self._react_lock:
-            self._pause_single(download_hash, pool_name, avail_gb)
+            self._delete_single(download_hash, pool_name, avail_gb)
 
     def _query_min_avail_cached(self) -> Optional[Tuple[str, float]]:
         """查询剩余容量最小的存储池，结果带缓存（窗口内复用，避免频繁 SSH）。
@@ -224,8 +224,11 @@ class QnapStorageMonitor(_PluginBase):
         self._disk_cache = (now, float(avail), str(name))
         return str(name), float(avail)
 
-    def _pause_single(self, download_hash: str, pool_name: str, avail_gb: float) -> None:
-        """暂停单个刚添加的下载任务，并更新暂停状态标记。
+    def _delete_single(self, download_hash: str, pool_name: str, avail_gb: float) -> None:
+        """删除单个刚添加的下载任务，空间不足时不留暂停残留。
+
+        刚添加的任务进度约 0%、尚未落盘任何数据，删除时无需删除文件
+        （delete_file=False），只移除下载器中的任务条目。
 
         :param download_hash: 下载任务 hash。
         :param pool_name: 剩余容量最少的存储池名。
@@ -233,21 +236,19 @@ class QnapStorageMonitor(_PluginBase):
         """
         client = self._get_transmission()
         if not client:
-            logger.warning("QNAP存储池监控：下载添加事件触发暂停，但无法连接 Transmission")
+            logger.warning("QNAP存储池监控：下载添加事件触发删除，但无法连接 Transmission")
             return
-        ok = client.stop_torrents(ids=[download_hash])
+        ok = client.delete_torrents(delete_file=False, ids=[download_hash])
         if ok:
-            self._download_paused = True
-            self.save_data("download_paused", True)
             logger.info(
-                "QNAP存储池监控：下载添加事件触发，存储池 %s 剩余 %.0fG 低于阈值 %.0fG，已暂停新下载任务 %s",
+                "QNAP存储池监控：下载添加事件触发，存储池 %s 剩余 %.0fG 低于阈值 %.0fG，已删除新下载任务 %s",
                 pool_name, avail_gb, self._stop_threshold_gb, download_hash)
             self._notify(
                 "QNAP 存储池告警：已拦截新下载",
                 f"存储池 {pool_name} 剩余仅 {avail_gb:.0f}G，低于停止阈值 "
-                f"{self._stop_threshold_gb:.0f}G，已暂停刚添加的下载任务。")
+                f"{self._stop_threshold_gb:.0f}G，已删除刚添加的下载任务，不占用磁盘空间。")
         else:
-            logger.warning("QNAP存储池监控：暂停新下载任务失败 %s", download_hash)
+            logger.warning("QNAP存储池监控：删除新下载任务失败 %s", download_hash)
 
     def _check_and_react(self) -> None:
         """执行一次容量检查，并按阈值决定暂停或恢复下载。"""
