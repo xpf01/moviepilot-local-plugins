@@ -51,6 +51,9 @@ class QnapStorageMonitor(_PluginBase):
     _auto_pause_download = True
     _monitor_all = False
     _onlyonce = False
+    # 手动任务豁免：开启时，仅拦截订阅自动触发（source 以 Subscribe 开头）的下载，
+    # 手动添加（source=Manual 或其它非订阅来源）的任务不删除，避免误伤用户手动下载。
+    _exempt_manual = True
 
     # 下载暂停状态标记，保存到插件数据，重启后可续
     _download_paused = False
@@ -82,6 +85,8 @@ class QnapStorageMonitor(_PluginBase):
         self._auto_pause_download = bool(config.get("auto_pause_download"))
         self._monitor_all = bool(config.get("monitor_all"))
         self._onlyonce = bool(config.get("onlyonce"))
+        # exempt_manual 缺省视为 True（默认豁免手动任务，避免误删）
+        self._exempt_manual = bool(config.get("exempt_manual", True))
         # 恢复上次的下载暂停状态，保证重启后状态一致
         self._download_paused = bool(self.get_data("download_paused"))
         if self._enabled and self._onlyonce:
@@ -169,6 +174,7 @@ class QnapStorageMonitor(_PluginBase):
             "auto_pause_download": True,
             "monitor_all": False,
             "onlyonce": False,
+            "exempt_manual": True,
         }
 
     def get_page(self) -> Optional[List[dict]]:
@@ -181,11 +187,13 @@ class QnapStorageMonitor(_PluginBase):
 
     @eventmanager.register(EventType.DownloadAdded)
     def remote_download_added(self, event):
-        """下载添加事件处理器：下载一旦被添加，立即检查磁盘并在不足时暂停该任务。
+        """下载添加事件处理器：下载一旦被添加，立即检查磁盘并在不足时删除该任务。
 
         这是对「定时巡检」的即时补充：定时巡检最长 12 小时才响应一次，而下载添加事件
         能在下载刚建立（进度约 0%、尚未占用新空间）时就触发检查，把磁盘风险窗口压缩到秒级。
         磁盘查询结果带 60 秒缓存，避免批量下载并发触发时反复 SSH 查询 QNAP。
+        开启「手动任务豁免」时，仅拦截订阅自动触发（source 以 Subscribe 开头）的任务，
+        手动添加（source=Manual 或其它非订阅来源）不删除，避免误伤用户手动下载。
         """
         if not self._enabled or not self._auto_pause_download:
             return
@@ -196,6 +204,11 @@ class QnapStorageMonitor(_PluginBase):
         download_hash = getattr(data, "hash", None) or (data.get("hash") if isinstance(data, dict) else None)
         if not download_hash:
             return
+        # 手动任务豁免：开启时，非订阅来源（Manual 及其它）直接跳过，不删除。
+        if self._exempt_manual:
+            source = getattr(data, "source", None) or (data.get("source") if isinstance(data, dict) else None)
+            if source and not str(source).startswith("Subscribe"):
+                return
         # 低频磁盘判断：带缓存，避免每个下载都 SSH 一次
         min_info = self._query_min_avail_cached()
         if min_info is None:

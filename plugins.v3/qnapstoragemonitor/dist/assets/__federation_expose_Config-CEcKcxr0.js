@@ -38,6 +38,7 @@ const defaults = {
   auto_pause_download: true,
   monitor_all: false,
   onlyonce: false,
+  exempt_manual: true,
 };
 
 const config = reactive({ ...defaults });
@@ -67,6 +68,7 @@ async function saveConfig() {
       auto_pause_download: Boolean(config.auto_pause_download),
       monitor_all: Boolean(config.monitor_all),
       onlyonce: Boolean(config.onlyonce),
+      exempt_manual: Boolean(config.exempt_manual),
     };
     const response = await props.api.put(`plugin/${props.pluginId || 'QnapStorageMonitor'}`, payload);
     const result = response?.data ?? response;
@@ -108,7 +110,7 @@ return (_ctx, _cache) => {
           color: "primary",
           class: "me-2"
         }),
-        _cache[12] || (_cache[12] = _createElementVNode("div", { class: "text-h6" }, "QNAP存储池监控配置", -1)),
+        _cache[13] || (_cache[13] = _createElementVNode("div", { class: "text-h6" }, "QNAP存储池监控配置", -1)),
         _createVNode(_component_VSpacer),
         _createVNode(_component_VBtn, {
           icon: "mdi-content-save",
@@ -148,8 +150,8 @@ return (_ctx, _cache) => {
       density: "compact",
       class: "mb-4"
     }, {
-      default: _withCtx(() => [...(_cache[13] || (_cache[13] = [
-        _createTextVNode(" 低于「停止下载阈值」暂停下载器任务（保留做种），高于「恢复下载阈值」自动恢复。仅支持 Transmission 下载器。 ", -1)
+      default: _withCtx(() => [...(_cache[14] || (_cache[14] = [
+        _createTextVNode(" 低于「停止下载阈值」删除刚添加的下载任务（不占用磁盘空间），高于「恢复下载阈值」自动恢复。仅支持 Transmission 下载器。 ", -1)
       ]))]),
       _: 1
     }),
@@ -305,7 +307,7 @@ return (_ctx, _cache) => {
             _createVNode(_component_VSwitch, {
               modelValue: config.auto_pause_download,
               "onUpdate:modelValue": _cache[10] || (_cache[10] = $event => ((config.auto_pause_download) = $event)),
-              label: "低于阈值时自动暂停下载",
+              label: "低于阈值时自动拦截下载",
               "hide-details": ""
             }, null, 8, ["modelValue"])
           ]),
@@ -324,6 +326,21 @@ return (_ctx, _cache) => {
             }, null, 8, ["modelValue"])
           ]),
           _: 1
+        }),
+        _createVNode(_component_VCol, {
+          cols: "12",
+          md: "6"
+        }, {
+          default: _withCtx(() => [
+            _createVNode(_component_VSwitch, {
+              modelValue: config.exempt_manual,
+              "onUpdate:modelValue": _cache[12] || (_cache[12] = $event => ((config.exempt_manual) = $event)),
+              label: "豁免手动任务（仅拦截订阅自动下载）",
+              color: "info",
+              "hide-details": ""
+            }, null, 8, ["modelValue"])
+          ]),
+          _: 1
         })
       ]),
       _: 1
@@ -334,7 +351,7 @@ return (_ctx, _cache) => {
         loading: saving.value,
         onClick: saveConfig
       }, {
-        default: _withCtx(() => [...(_cache[14] || (_cache[14] = [
+        default: _withCtx(() => [...(_cache[15] || (_cache[15] = [
           _createTextVNode("保存配置", -1)
         ]))]),
         _: 1

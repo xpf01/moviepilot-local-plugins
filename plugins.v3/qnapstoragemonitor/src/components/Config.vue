@@ -23,6 +23,7 @@ const defaults = {
   auto_pause_download: true,
   monitor_all: false,
   onlyonce: false,
+  exempt_manual: true,
 }
 
 const config = reactive({ ...defaults })
@@ -52,6 +53,7 @@ async function saveConfig() {
       auto_pause_download: Boolean(config.auto_pause_download),
       monitor_all: Boolean(config.monitor_all),
       onlyonce: Boolean(config.onlyonce),
+      exempt_manual: Boolean(config.exempt_manual),
     }
     const response = await props.api.put(`plugin/${props.pluginId || 'QnapStorageMonitor'}`, payload)
     const result = response?.data ?? response
@@ -82,7 +84,7 @@ onMounted(() => {
     <VDivider class="mb-4" />
     <VAlert v-if="message.text" :type="message.type" variant="tonal" density="compact" class="mb-4">{{ message.text }}</VAlert>
     <VAlert type="info" variant="tonal" density="compact" class="mb-4">
-      低于「停止下载阈值」暂停下载器任务（保留做种），高于「恢复下载阈值」自动恢复。仅支持 Transmission 下载器。
+      低于「停止下载阈值」删除刚添加的下载任务（不占用磁盘空间），高于「恢复下载阈值」自动恢复。仅支持 Transmission 下载器。
     </VAlert>
     <VRow dense>
       <VCol cols="12" md="6"><VSwitch v-model="config.enabled" label="启用插件" color="success" hide-details /></VCol>
@@ -94,8 +96,9 @@ onMounted(() => {
       <VCol cols="12" md="4"><VTextField v-model.number="config.interval_hours" label="轮询间隔(小时)" type="number" variant="outlined" placeholder="12" /></VCol>
       <VCol cols="12" md="4"><VTextField v-model.number="config.stop_threshold_gb" label="停止下载阈值(GB)" type="number" variant="outlined" placeholder="500" /></VCol>
       <VCol cols="12" md="4"><VTextField v-model.number="config.resume_threshold_gb" label="恢复下载阈值(GB)" type="number" variant="outlined" placeholder="2000" /></VCol>
-      <VCol cols="12" md="6"><VSwitch v-model="config.auto_pause_download" label="低于阈值时自动暂停下载" hide-details /></VCol>
+      <VCol cols="12" md="6"><VSwitch v-model="config.auto_pause_download" label="低于阈值时自动拦截下载" hide-details /></VCol>
       <VCol cols="12" md="6"><VSwitch v-model="config.monitor_all" label="监控全部存储池" hide-details /></VCol>
+      <VCol cols="12" md="6"><VSwitch v-model="config.exempt_manual" label="豁免手动任务（仅拦截订阅自动下载）" color="info" hide-details /></VCol>
     </VRow>
     <div class="d-flex justify-end mt-4"><VBtn color="primary" :loading="saving" @click="saveConfig">保存配置</VBtn></div>
   </div>
