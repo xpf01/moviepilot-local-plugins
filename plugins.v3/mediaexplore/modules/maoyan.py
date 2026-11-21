@@ -435,6 +435,34 @@ class MaoyanSource(_PluginBase):
             pass
         return f"https://image.tmdb.org/t/p/{size}/{path.lstrip('/')}"
 
+    def __build_tmdb_opener(self):
+        """
+        构造带宿主代理的 urllib opener。
+
+        TMDB 在本环境必须经代理访问；裸 urllib.urlopen 只认环境变量代理，
+        而容器内没有 http_proxy/https_proxy，会直连失败（Network is unreachable）。
+        这里显式取宿主 settings.PROXY，并禁用 CookieJar（避免 Python 3.14 下
+        http.cookiejar 互递归）。
+        """
+        import urllib.request
+        proxy_map = None
+        try:
+            proxy = getattr(settings, "PROXY", None)
+            if isinstance(proxy, dict):
+                proxy_map = {
+                    key: str(value).strip()
+                    for key, value in proxy.items()
+                    if str(value or "").strip()
+                } or None
+        except Exception as err:
+            logger.warning("读取宿主代理配置失败，TMDB 将直连：%s", err)
+        if not proxy_map:
+            logger.warning("宿主未配置代理，TMDB 直连（本环境预计会失败）")
+            return urllib.request.build_opener()
+        return urllib.request.build_opener(
+            urllib.request.ProxyHandler(proxy_map)
+        )
+
     def __tmdb_search(self, title: str, year: Optional[str] = None,
                        mtype: MediaType = MediaType.TV) -> Optional[list]:
         """
@@ -455,6 +483,7 @@ class MaoyanSource(_PluginBase):
             import urllib.request
             import urllib.parse
             kind = "movie" if mtype == MediaType.MOVIE else "tv"
+            opener = self.__build_tmdb_opener()
             def _do_search(_year):
                 params = {"api_key": api_key, "query": title, "language": "zh-CN"}
                 if _year:
@@ -463,7 +492,7 @@ class MaoyanSource(_PluginBase):
                     self.__tmdb_api_domain(), kind, urllib.parse.urlencode(params))
                 req = urllib.request.Request(url, headers={
                     "User-Agent": "Mozilla/5.0 (MoviePilot MaoyanTop30)"})
-                with urllib.request.urlopen(req, timeout=12) as resp:
+                with opener.open(req, timeout=12) as resp:
                     data = json.loads(resp.read().decode("utf-8", "replace"))
                 return data.get("results") or []
             results = _do_search(year)
