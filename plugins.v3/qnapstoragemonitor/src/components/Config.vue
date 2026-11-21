@@ -24,6 +24,7 @@ const defaults = {
   monitor_all: false,
   onlyonce: false,
   exempt_manual: true,
+  pause_subscribe_on_block: true,
 }
 
 const config = reactive({ ...defaults })
@@ -54,6 +55,7 @@ async function saveConfig() {
       monitor_all: Boolean(config.monitor_all),
       onlyonce: Boolean(config.onlyonce),
       exempt_manual: Boolean(config.exempt_manual),
+      pause_subscribe_on_block: Boolean(config.pause_subscribe_on_block),
     }
     const response = await props.api.put(`plugin/${props.pluginId || 'QnapStorageMonitor'}`, payload)
     const result = response?.data ?? response
@@ -99,6 +101,7 @@ onMounted(() => {
       <VCol cols="12" md="6"><VSwitch v-model="config.auto_pause_download" label="低于阈值时自动拦截下载" hide-details /></VCol>
       <VCol cols="12" md="6"><VSwitch v-model="config.monitor_all" label="监控全部存储池" hide-details /></VCol>
       <VCol cols="12" md="6"><VSwitch v-model="config.exempt_manual" label="豁免手动任务（仅拦截订阅自动下载）" color="info" hide-details /></VCol>
+      <VCol cols="12" md="6"><VSwitch v-model="config.pause_subscribe_on_block" label="拦截时连带暂停订阅（防反复重下）" color="warning" hide-details /></VCol>
     </VRow>
     <div class="d-flex justify-end mt-4"><VBtn color="primary" :loading="saving" @click="saveConfig">保存配置</VBtn></div>
   </div>

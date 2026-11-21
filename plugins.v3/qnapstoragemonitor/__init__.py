@@ -5,17 +5,24 @@
 并通过 MoviePilot 通知渠道推送告警；当容量回升到「恢复下载阈值」之上时自动恢复下载。
 两个阈值可独立配置，也可手动恢复。使用系统命令 sshpass + ssh 连接 QNAP，
 复用 MoviePilot 内置 Transmission 客户端控制下载任务，不依赖额外的 Python 依赖。
+
+空间不足时，除删除刚添加的下载任务外，还会把触发该下载的订阅置为暂停（state=S），
+避免订阅在下一轮搜索中再次命中同一资源、形成「添加→删除→再添加」的死循环；
+容量回升到恢复阈值后，被本插件暂停的订阅会随之自动恢复。
 """
 
+import json
 import re
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from apscheduler.triggers.interval import IntervalTrigger
 
 from app.application.downloader import DownloaderHelper
+from app.db.oper.subscribe import SubscribeOper
 from app.modules.transmission.transmission import Transmission
 from app.plugins import _PluginBase
 from app.schemas import NotificationType
@@ -54,9 +61,18 @@ class QnapStorageMonitor(_PluginBase):
     # 手动任务豁免：开启时，仅拦截订阅自动触发（source 以 Subscribe 开头）的下载，
     # 手动添加（source=Manual 或其它非订阅来源）的任务不删除，避免误伤用户手动下载。
     _exempt_manual = True
+    # 拦截后连带暂停订阅：开启时，删除下载任务后把对应订阅置为暂停（state=S），
+    # 避免订阅在下一轮搜索中再次命中同一资源，形成「添加→删除→再添加」的死循环。
+    _pause_subscribe_on_block = True
 
     # 下载暂停状态标记，保存到插件数据，重启后可续
     _download_paused = False
+    # 会触发自动搜索的订阅状态：R（订阅中）与 P（待定，允许搜索但不允许完成）。
+    # 只有这两个状态需要暂停才能阻断反复重下；N 未处理、S 已暂停无需干预。
+    _SEARCHABLE_STATES = ("R", "P")
+    # 被本插件暂停的订阅：{订阅ID(str): {name, media_id, season, original_state, paused_at, hash}}
+    # 只记录本插件暂停的订阅，容量恢复后据此精确回滚，不碰用户自己暂停的订阅。
+    _paused_subscribes: Dict[str, Dict[str, Any]] = {}
 
     # 磁盘容量查询缓存（避免 DownloadAdded 事件高频触发时反复 SSH）：(查询时间戳, 最小剩余GB, 剩余最少池名)
     _disk_cache: Optional[Tuple[float, float, str]] = None
@@ -87,8 +103,13 @@ class QnapStorageMonitor(_PluginBase):
         self._onlyonce = bool(config.get("onlyonce"))
         # exempt_manual 缺省视为 True（默认豁免手动任务，避免误删）
         self._exempt_manual = bool(config.get("exempt_manual", True))
+        # pause_subscribe_on_block 缺省视为 True（默认连带暂停订阅，防反复添加）
+        self._pause_subscribe_on_block = bool(config.get("pause_subscribe_on_block", True))
         # 恢复上次的下载暂停状态，保证重启后状态一致
         self._download_paused = bool(self.get_data("download_paused"))
+        # 恢复被本插件暂停的订阅清单（dict，键为字符串化的订阅 ID）
+        saved_paused = self.get_data("paused_subscribes")
+        self._paused_subscribes = dict(saved_paused) if isinstance(saved_paused, dict) else {}
         if self._enabled and self._onlyonce:
             threading.Thread(target=self._check_and_react, daemon=True).start()
 
@@ -142,6 +163,7 @@ class QnapStorageMonitor(_PluginBase):
             "data": {
                 "enabled": self._enabled,
                 "download_paused": self._download_paused,
+                "paused_subscribe_count": len(self._paused_subscribes),
                 "last_report": self.get_data("last_report") or "",
             },
         }
@@ -156,6 +178,7 @@ class QnapStorageMonitor(_PluginBase):
             "message": "检查完成",
             "data": {
                 "download_paused": self._download_paused,
+                "paused_subscribe_count": len(self._paused_subscribes),
                 "last_report": self.get_data("last_report") or "",
             },
         }
@@ -175,6 +198,7 @@ class QnapStorageMonitor(_PluginBase):
             "monitor_all": False,
             "onlyonce": False,
             "exempt_manual": True,
+            "pause_subscribe_on_block": True,
         }
 
     def get_page(self) -> Optional[List[dict]]:
@@ -194,6 +218,9 @@ class QnapStorageMonitor(_PluginBase):
         磁盘查询结果带 60 秒缓存，避免批量下载并发触发时反复 SSH 查询 QNAP。
         开启「手动任务豁免」时，仅拦截订阅自动触发（source 以 Subscribe 开头）的任务，
         手动添加（source=Manual 或其它非订阅来源）不删除，避免误伤用户手动下载。
+
+        开启「拦截后暂停订阅」时，删除下载任务后还会把触发该下载的订阅置为暂停（state=S），
+        否则订阅下一轮搜索仍会命中同一批资源，形成「添加→删除→再添加」的无限循环。
         """
         if not self._enabled or not self._auto_pause_download:
             return
@@ -204,9 +231,9 @@ class QnapStorageMonitor(_PluginBase):
         download_hash = getattr(data, "hash", None) or (data.get("hash") if isinstance(data, dict) else None)
         if not download_hash:
             return
+        source = getattr(data, "source", None) or (data.get("source") if isinstance(data, dict) else None)
         # 手动任务豁免：开启时，非订阅来源（Manual 及其它）直接跳过，不删除。
         if self._exempt_manual:
-            source = getattr(data, "source", None) or (data.get("source") if isinstance(data, dict) else None)
             if source and not str(source).startswith("Subscribe"):
                 return
         # 低频磁盘判断：带缓存，避免每个下载都 SSH 一次
@@ -218,7 +245,168 @@ class QnapStorageMonitor(_PluginBase):
             return
         # 低于阈值：立即删除这个刚添加的下载任务，不留暂停残留
         with self._react_lock:
-            self._delete_single(download_hash, pool_name, avail_gb)
+            deleted = self._delete_single(download_hash, pool_name, avail_gb)
+            if deleted and self._pause_subscribe_on_block:
+                self._pause_subscribe_from_source(source, download_hash, pool_name, avail_gb)
+
+    def _parse_subscribe_source(self, source: Any) -> Optional[Dict[str, Any]]:
+        """解析订阅来源字符串，取出订阅身份信息。
+
+        MoviePilot 订阅下载的 source 形如 ``Subscribe|{"id": 110, "name": "...", ...}``。
+
+        :param source: 事件 payload 中的 source 字段。
+        :return: 解析出的订阅信息字典；非订阅来源或解析失败返回 None。
+        """
+        if not source:
+            return None
+        text = str(source).strip()
+        if not text.startswith("Subscribe|"):
+            return None
+        try:
+            parsed = json.loads(text.split("|", 1)[1])
+        except (IndexError, json.JSONDecodeError, TypeError) as err:
+            logger.warning("QNAP存储池监控：解析订阅来源失败 %s", err)
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def _pause_subscribe_from_source(
+        self, source: Any, download_hash: str, pool_name: str, avail_gb: float
+    ) -> None:
+        """按下载来源暂停对应订阅，防止下一轮搜索重复添加同一资源。
+
+        MoviePilot 订阅状态中，「R（订阅中）」和「P（待定）」都允许自动搜索，
+        因此两者都必须暂停，否则订阅仍会在下一轮搜索中重新命中同一资源。
+        已被暂停（S）、已完成或已删除的订阅不再处理。
+        暂停记录（含原始状态）写入插件数据，容量恢复后据此精确回滚。
+
+        :param source: 事件 payload 中的 source 字段。
+        :param download_hash: 被删除的下载任务 hash，用于记录与排查。
+        :param pool_name: 剩余容量最少的存储池名。
+        :param avail_gb: 该池剩余容量（GB）。
+        """
+        info = self._parse_subscribe_source(source)
+        if not info:
+            return
+        subscribe_id = info.get("id")
+        if subscribe_id is None:
+            return
+        key = str(subscribe_id)
+        try:
+            oper = SubscribeOper()
+            subscribe = oper.get(int(subscribe_id))
+        except Exception as exc:
+            logger.error("QNAP存储池监控：读取订阅 %s 失败 %s", subscribe_id, exc)
+            return
+        if not subscribe:
+            logger.warning("QNAP存储池监控：订阅 %s 不存在，跳过暂停", subscribe_id)
+            return
+        current_state = getattr(subscribe, "state", None)
+        if current_state == "S":
+            # 已是暂停态：可能上次就是本插件停的，补记一次以便恢复时回滚
+            if key not in self._paused_subscribes:
+                self._remember_paused_subscribe(key, subscribe, download_hash)
+            return
+        if current_state not in self._SEARCHABLE_STATES:
+            logger.info(
+                "QNAP存储池监控：订阅 %s 状态为 %s，不会自动搜索，无需暂停",
+                subscribe_id, current_state)
+            return
+        try:
+            # SubscribeOper 未绑定会话时由组合根自行开事务并提交，无需额外 commit
+            oper.update(int(subscribe_id), {"state": "S"})
+        except Exception as exc:
+            logger.error("QNAP存储池监控：暂停订阅 %s 失败 %s", subscribe_id, exc)
+            self._notify(
+                "QNAP 存储池告警：暂停订阅失败",
+                f"存储池 {pool_name} 剩余 {avail_gb:.0f}G 低于阈值，"
+                f"已删除下载任务，但暂停订阅「{info.get('name') or subscribe_id}」失败，"
+                f"该订阅可能反复重新下载，请手动暂停。")
+            return
+        self._remember_paused_subscribe(key, subscribe, download_hash)
+        logger.info(
+            "QNAP存储池监控：已暂停订阅 %s「%s」（原状态 %s），避免重复添加下载",
+            subscribe_id, info.get("name") or getattr(subscribe, "name", ""), current_state)
+        self._notify(
+            "QNAP 存储池告警：已拦截并暂停订阅",
+            f"存储池 {pool_name} 剩余仅 {avail_gb:.0f}G，低于停止阈值 "
+            f"{self._stop_threshold_gb:.0f}G。\n"
+            f"已删除刚添加的下载任务，并暂停订阅「{info.get('name') or subscribe_id}」"
+            f"（原状态 {current_state}），避免反复重新下载。容量恢复后将自动恢复该订阅。")
+
+    def _remember_paused_subscribe(self, key: str, subscribe: Any, download_hash: str) -> None:
+        """记录被本插件暂停的订阅，供容量恢复后回滚。
+
+        同时记录暂停前的原始状态（R 或 P），恢复时按原状态还原，
+        避免把「待定(P)」的订阅错误恢复成「订阅中(R)」。
+
+        :param key: 字符串化的订阅 ID。
+        :param subscribe: 订阅记录对象。
+        :param download_hash: 触发暂停的下载任务 hash。
+        """
+        original_state = getattr(subscribe, "state", None)
+        # 已处于 S 的订阅可能重复进入本方法，此时保留首次记录的原始状态
+        previous = self._paused_subscribes.get(key) or {}
+        self._paused_subscribes[key] = {
+            "name": getattr(subscribe, "name", "") or "",
+            "media_id": str(getattr(subscribe, "tmdbid", "") or ""),
+            "season": getattr(subscribe, "season", None),
+            "original_state": previous.get("original_state")
+            or (original_state if original_state in self._SEARCHABLE_STATES else "R"),
+            "paused_at": int(time.time()),
+            "hash": download_hash,
+        }
+        self.save_data("paused_subscribes", self._paused_subscribes)
+
+    def _resume_paused_subscribes(self) -> int:
+        """恢复被本插件暂停的订阅，仅回滚自己暂停的那些。
+
+        :return: 成功恢复的订阅数量。
+        """
+        if not self._paused_subscribes:
+            return 0
+        recovered = 0
+        remaining: Dict[str, Dict[str, Any]] = {}
+        try:
+            oper = SubscribeOper()
+        except Exception as exc:
+            logger.error("QNAP存储池监控：初始化订阅操作失败 %s", exc)
+            return 0
+        for key, info in list(self._paused_subscribes.items()):
+            try:
+                subscribe = oper.get(int(key))
+            except Exception as exc:
+                logger.error("QNAP存储池监控：读取订阅 %s 失败 %s", key, exc)
+                remaining[key] = info
+                continue
+            if not subscribe:
+                # 订阅已被删除，无需恢复
+                logger.info("QNAP存储池监控：订阅 %s 已不存在，移出待恢复清单", key)
+                continue
+            if getattr(subscribe, "state", None) != "S":
+                # 状态已被用户改动，尊重用户选择，不强行覆盖
+                logger.info(
+                    "QNAP存储池监控：订阅 %s 状态已是 %s，跳过恢复",
+                    key, getattr(subscribe, "state", None))
+                continue
+            try:
+                # 还原到暂停前的原始状态（R 或 P），不要一律恢复成 R
+                restore_state = str(info.get("original_state") or "R")
+                if restore_state not in self._SEARCHABLE_STATES:
+                    restore_state = "R"
+                # SubscribeOper 未绑定会话时由组合根自行开事务并提交，无需额外 commit
+                oper.update(int(key), {"state": restore_state})
+            except Exception as exc:
+                logger.error("QNAP存储池监控：恢复订阅 %s 失败 %s", key, exc)
+                remaining[key] = info
+                continue
+            recovered += 1
+            logger.info(
+                "QNAP存储池监控：已恢复订阅 %s「%s」到原状态 %s",
+                key, info.get("name") or "", restore_state)
+        self._paused_subscribes = remaining
+        self.save_data("paused_subscribes", self._paused_subscribes)
+        return recovered
+
 
     def _query_min_avail_cached(self) -> Optional[Tuple[str, float]]:
         """查询剩余容量最小的存储池，结果带缓存（窗口内复用，避免频繁 SSH）。
@@ -237,7 +425,7 @@ class QnapStorageMonitor(_PluginBase):
         self._disk_cache = (now, float(avail), str(name))
         return str(name), float(avail)
 
-    def _delete_single(self, download_hash: str, pool_name: str, avail_gb: float) -> None:
+    def _delete_single(self, download_hash: str, pool_name: str, avail_gb: float) -> bool:
         """删除单个刚添加的下载任务，空间不足时不留暂停残留。
 
         刚添加的任务进度约 0%、尚未落盘任何数据，删除时无需删除文件
@@ -246,22 +434,20 @@ class QnapStorageMonitor(_PluginBase):
         :param download_hash: 下载任务 hash。
         :param pool_name: 剩余容量最少的存储池名。
         :param avail_gb: 该池剩余容量（GB）。
+        :return: 删除成功返回 True，失败返回 False。
         """
         client = self._get_transmission()
         if not client:
             logger.warning("QNAP存储池监控：下载添加事件触发删除，但无法连接 Transmission")
-            return
+            return False
         ok = client.delete_torrents(delete_file=False, ids=[download_hash])
         if ok:
             logger.info(
                 "QNAP存储池监控：下载添加事件触发，存储池 %s 剩余 %.0fG 低于阈值 %.0fG，已删除新下载任务 %s",
                 pool_name, avail_gb, self._stop_threshold_gb, download_hash)
-            self._notify(
-                "QNAP 存储池告警：已拦截新下载",
-                f"存储池 {pool_name} 剩余仅 {avail_gb:.0f}G，低于停止阈值 "
-                f"{self._stop_threshold_gb:.0f}G，已删除刚添加的下载任务，不占用磁盘空间。")
-        else:
-            logger.warning("QNAP存储池监控：删除新下载任务失败 %s", download_hash)
+            return True
+        logger.warning("QNAP存储池监控：删除新下载任务失败 %s", download_hash)
+        return False
 
     def _check_and_react(self) -> None:
         """执行一次容量检查，并按阈值决定暂停或恢复下载。"""
@@ -312,23 +498,32 @@ class QnapStorageMonitor(_PluginBase):
                     f"存储池 {min_name} 剩余仅 {avail_gb:.0f}G，低于停止阈值 "
                     f"{self._stop_threshold_gb:.0f}G。\n\n" + "\n".join(lines)
                 )
-        elif avail_gb > self._resume_threshold_gb and self._download_paused:
-            # 高于恢复阈值：恢复下载
-            if self._resume_downloads():
-                self._download_paused = False
-                self.save_data("download_paused", False)
+        elif avail_gb > self._resume_threshold_gb:
+            # 高于恢复阈值：恢复下载器任务与因空间不足被暂停的订阅。
+            # 两者独立判断：可能只发生「拦截单次下载并暂停订阅」而下载器从未整体暂停。
+            resumed_notes: List[str] = []
+            if self._download_paused:
+                if self._resume_downloads():
+                    self._download_paused = False
+                    self.save_data("download_paused", False)
+                    resumed_notes.append("已自动恢复下载器任务")
+                else:
+                    self._notify(
+                        "QNAP 存储池恢复：恢复下载失败",
+                        f"存储池 {min_name} 剩余 {avail_gb:.0f}G 已高于恢复阈值，"
+                        f"但恢复下载任务失败，请手动处理。"
+                    )
+            if self._paused_subscribes:
+                count = self._resume_paused_subscribes()
+                if count:
+                    resumed_notes.append(f"已恢复 {count} 个此前因空间不足被暂停的订阅")
+            if resumed_notes:
                 text = (
                     f"存储池 {min_name} 剩余 {avail_gb:.0f}G，已高于恢复阈值 "
-                    f"{self._resume_threshold_gb:.0f}G，已自动恢复下载任务。\n\n"
+                    f"{self._resume_threshold_gb:.0f}G，" + "，".join(resumed_notes) + "。\n\n"
                     + "\n".join(lines)
                 )
-                self._notify("QNAP 存储池恢复：已恢复下载", text)
-            else:
-                self._notify(
-                    "QNAP 存储池恢复：恢复下载失败",
-                    f"存储池 {min_name} 剩余 {avail_gb:.0f}G 已高于恢复阈值，"
-                    f"但恢复下载任务失败，请手动处理。"
-                )
+                self._notify("QNAP 存储池恢复", text)
         # 介于两阈值之间：维持现状，不动作
 
     def _get_transmission(self) -> Optional[Transmission]:

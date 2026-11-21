@@ -39,6 +39,7 @@ const defaults = {
   monitor_all: false,
   onlyonce: false,
   exempt_manual: true,
+  pause_subscribe_on_block: true,
 };
 
 const config = reactive({ ...defaults });
@@ -69,6 +70,7 @@ async function saveConfig() {
       monitor_all: Boolean(config.monitor_all),
       onlyonce: Boolean(config.onlyonce),
       exempt_manual: Boolean(config.exempt_manual),
+      pause_subscribe_on_block: Boolean(config.pause_subscribe_on_block),
     };
     const response = await props.api.put(`plugin/${props.pluginId || 'QnapStorageMonitor'}`, payload);
     const result = response?.data ?? response;
@@ -110,7 +112,7 @@ return (_ctx, _cache) => {
           color: "primary",
           class: "me-2"
         }),
-        _cache[13] || (_cache[13] = _createElementVNode("div", { class: "text-h6" }, "QNAP存储池监控配置", -1)),
+        _cache[14] || (_cache[14] = _createElementVNode("div", { class: "text-h6" }, "QNAP存储池监控配置", -1)),
         _createVNode(_component_VSpacer),
         _createVNode(_component_VBtn, {
           icon: "mdi-content-save",
@@ -150,7 +152,7 @@ return (_ctx, _cache) => {
       density: "compact",
       class: "mb-4"
     }, {
-      default: _withCtx(() => [...(_cache[14] || (_cache[14] = [
+      default: _withCtx(() => [...(_cache[15] || (_cache[15] = [
         _createTextVNode(" 低于「停止下载阈值」删除刚添加的下载任务（不占用磁盘空间），高于「恢复下载阈值」自动恢复。仅支持 Transmission 下载器。 ", -1)
       ]))]),
       _: 1
@@ -341,6 +343,21 @@ return (_ctx, _cache) => {
             }, null, 8, ["modelValue"])
           ]),
           _: 1
+        }),
+        _createVNode(_component_VCol, {
+          cols: "12",
+          md: "6"
+        }, {
+          default: _withCtx(() => [
+            _createVNode(_component_VSwitch, {
+              modelValue: config.pause_subscribe_on_block,
+              "onUpdate:modelValue": _cache[13] || (_cache[13] = $event => ((config.pause_subscribe_on_block) = $event)),
+              label: "拦截时连带暂停订阅（防反复重下）",
+              color: "warning",
+              "hide-details": ""
+            }, null, 8, ["modelValue"])
+          ]),
+          _: 1
         })
       ]),
       _: 1
@@ -351,7 +368,7 @@ return (_ctx, _cache) => {
         loading: saving.value,
         onClick: saveConfig
       }, {
-        default: _withCtx(() => [...(_cache[15] || (_cache[15] = [
+        default: _withCtx(() => [...(_cache[16] || (_cache[16] = [
           _createTextVNode("保存配置", -1)
         ]))]),
         _: 1
