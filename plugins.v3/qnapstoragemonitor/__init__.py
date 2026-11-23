@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 
 from app.application.downloader import DownloaderHelper
 from app.db.oper.subscribe import SubscribeOper
@@ -37,7 +37,7 @@ class QnapStorageMonitor(_PluginBase):
     plugin_name = "QNAP存储池监控"
     plugin_desc = "定时监控 QNAP 存储池容量，低于阈值暂停下载、高于阈值自动恢复，并推送告警。"
     plugin_icon = "qnapstoragemonitor.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.2"
     plugin_label = "系统工具,监控,存储"
     plugin_author = "local"
     plugin_config_prefix = "qnapstoragemonitor_"
@@ -53,10 +53,12 @@ class QnapStorageMonitor(_PluginBase):
     _username = ""
     _password = ""
     _interval_hours = 12
+    _cron = "0 * * * *"
     _stop_threshold_gb = 500.0
     _resume_threshold_gb = 2000.0
     _auto_pause_download = True
     _monitor_all = False
+    _monitor_pool = ""
     _onlyonce = False
     # 手动任务豁免：开启时，仅拦截订阅自动触发（source 以 Subscribe 开头）的下载，
     # 手动添加（source=Manual 或其它非订阅来源）的任务不删除，避免误伤用户手动下载。
@@ -96,10 +98,12 @@ class QnapStorageMonitor(_PluginBase):
         self._username = str(config.get("username") or "").strip()
         self._password = str(config.get("password") or "")
         self._interval_hours = int(config.get("interval_hours") or 12)
+        self._cron = str(config.get("cron") or "0 * * * *")
         self._stop_threshold_gb = float(config.get("stop_threshold_gb") or 500)
         self._resume_threshold_gb = float(config.get("resume_threshold_gb") or 2000)
         self._auto_pause_download = bool(config.get("auto_pause_download"))
         self._monitor_all = bool(config.get("monitor_all"))
+        self._monitor_pool = str(config.get("monitor_pool") or "").strip()
         self._onlyonce = bool(config.get("onlyonce"))
         # exempt_manual 缺省视为 True（默认豁免手动任务，避免误删）
         self._exempt_manual = bool(config.get("exempt_manual", True))
@@ -129,7 +133,7 @@ class QnapStorageMonitor(_PluginBase):
         return [{
             "id": "QnapStorageMonitor",
             "name": "QNAP存储池容量监控",
-            "trigger": IntervalTrigger(hours=self._interval_hours),
+            "trigger": CronTrigger.from_crontab(self._cron),
             "func": self._check_and_react,
             "kwargs": {}
         }]
@@ -191,11 +195,12 @@ class QnapStorageMonitor(_PluginBase):
             "port": 22,
             "username": "",
             "password": "",
-            "interval_hours": 12,
+            "cron": "0 * * * *",
             "stop_threshold_gb": 500,
             "resume_threshold_gb": 2000,
             "auto_pause_download": True,
             "monitor_all": False,
+            "monitor_pool": "",
             "onlyonce": False,
             "exempt_manual": True,
             "pause_subscribe_on_block": True,
@@ -676,6 +681,8 @@ class QnapStorageMonitor(_PluginBase):
         :return: 存储池名；不需要监控时返回 None。
         """
         base = Path(mount).name
+        if self._monitor_pool:
+            return base if base == self._monitor_pool else None
         if base.startswith(self._MONITOR_PREFIX) and base.endswith("_DATA"):
             return base
         if self._monitor_all and ("CACHEDEV" in base or "cachedev" in dev):

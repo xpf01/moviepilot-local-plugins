@@ -17,11 +17,12 @@ const defaults = {
   port: 22,
   username: '',
   password: '',
-  interval_hours: 12,
+  cron: '0 * * * *',
   stop_threshold_gb: 500,
   resume_threshold_gb: 2000,
   auto_pause_download: true,
   monitor_all: false,
+  monitor_pool: '',
   onlyonce: false,
   exempt_manual: true,
   pause_subscribe_on_block: true,
@@ -48,11 +49,12 @@ async function saveConfig() {
       port: Number(config.port) || 22,
       username: String(config.username || '').trim(),
       password: String(config.password || ''),
-      interval_hours: Number(config.interval_hours) || 12,
+      cron: String(config.cron || '0 * * * *').trim(),
       stop_threshold_gb: Number(config.stop_threshold_gb) || 500,
       resume_threshold_gb: Number(config.resume_threshold_gb) || 2000,
       auto_pause_download: Boolean(config.auto_pause_download),
       monitor_all: Boolean(config.monitor_all),
+      monitor_pool: String(config.monitor_pool || '').trim(),
       onlyonce: Boolean(config.onlyonce),
       exempt_manual: Boolean(config.exempt_manual),
       pause_subscribe_on_block: Boolean(config.pause_subscribe_on_block),
@@ -95,10 +97,11 @@ onMounted(() => {
       <VCol cols="12" md="6"><VTextField v-model.number="config.port" label="SSH 端口" type="number" variant="outlined" placeholder="22" /></VCol>
       <VCol cols="12" md="6"><VTextField v-model="config.username" label="SSH 用户名" variant="outlined" placeholder="admin" /></VCol>
       <VCol cols="12" md="6"><VTextField v-model="config.password" label="SSH 密码" type="password" variant="outlined" /></VCol>
-      <VCol cols="12" md="4"><VTextField v-model.number="config.interval_hours" label="轮询间隔(小时)" type="number" variant="outlined" placeholder="12" /></VCol>
+      <VCol cols="12" md="4"><VTextField v-model="config.cron" label="定时表达式(cron)" variant="outlined" placeholder="0 * * * *" hint="每小时：0 * * * *" /></VCol>
       <VCol cols="12" md="4"><VTextField v-model.number="config.stop_threshold_gb" label="停止下载阈值(GB)" type="number" variant="outlined" placeholder="500" /></VCol>
       <VCol cols="12" md="4"><VTextField v-model.number="config.resume_threshold_gb" label="恢复下载阈值(GB)" type="number" variant="outlined" placeholder="2000" /></VCol>
       <VCol cols="12" md="6"><VSwitch v-model="config.auto_pause_download" label="低于阈值时自动拦截下载" hide-details /></VCol>
+      <VCol cols="12" md="6"><VTextField v-model="config.monitor_pool" label="监控池名称(留空=全部CACHEDEV)" variant="outlined" placeholder="CACHEDEV2_DATA" hint="只监控指定存储池，例如 CACHEDEV2_DATA" /></VCol>
       <VCol cols="12" md="6"><VSwitch v-model="config.monitor_all" label="监控全部存储池" hide-details /></VCol>
       <VCol cols="12" md="6"><VSwitch v-model="config.exempt_manual" label="豁免手动任务（仅拦截订阅自动下载）" color="info" hide-details /></VCol>
       <VCol cols="12" md="6"><VSwitch v-model="config.pause_subscribe_on_block" label="拦截时连带暂停订阅（防反复重下）" color="warning" hide-details /></VCol>
@@ -106,4 +109,3 @@ onMounted(() => {
     <div class="d-flex justify-end mt-4"><VBtn color="primary" :loading="saving" @click="saveConfig">保存配置</VBtn></div>
   </div>
 </template>
-
